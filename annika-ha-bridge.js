@@ -81,7 +81,22 @@
   var pullArmed = false
   var pullStartY = null
 
-  function isAtScrollTop() {
+  // HA's dashboard is built from web components with their own Shadow DOM, so
+  // the element that's actually scrolling when you're mid-dashboard is nested
+  // inside one or more shadow roots — checking only the root document's
+  // scrollTop (as if this were a plain page) is always 0 and never reflects
+  // where the *view* itself is really scrolled to. `composedPath()` gives the
+  // real innermost-to-outermost chain for the touch, piercing shadow
+  // boundaries, so walk that to find whichever element is actually scrolled.
+  function isAtScrollTop(event) {
+    var path = (event.composedPath && event.composedPath()) || [event.target]
+    for (var i = 0; i < path.length; i++) {
+      var el = path[i]
+      if (!(el instanceof Element)) continue
+      var style = getComputedStyle(el)
+      var scrollable = /(auto|scroll)/.test(style.overflowY) && el.scrollHeight > el.clientHeight
+      if (scrollable) return el.scrollTop <= 0
+    }
     var scroller = document.scrollingElement || document.documentElement
     return scroller.scrollTop <= 0
   }
@@ -90,7 +105,7 @@
     'touchstart',
     function (event) {
       if (event.touches.length !== 1) return
-      pullArmed = isAtScrollTop()
+      pullArmed = isAtScrollTop(event)
       pullStartY = event.touches[0].clientY
     },
     { passive: true }
