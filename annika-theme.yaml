@@ -1,0 +1,87 @@
+Annika:
+  modes:
+    dark:
+      # Base Anika landing palette
+      primary-color: "#33C46E"
+      accent-color: "#42CE79"
+      dark-primary-color: "#21A054"
+      light-primary-color: "#42CE79"
+
+      # Secondary colors
+      red-color: "#B4592E"
+      rgb-red-color: "180, 89, 46"
+      orange-color: "#D9954B"
+      rgb-orange-color: "217, 149, 75"
+      deep-orange-color: "#A6502B"
+      rgb-deep-orange-color: "166, 80, 43"
+      purple-color: "#4F7A63"
+      rgb-purple-color: "79, 122, 99"
+      deep-purple-color: "#3F6553"
+      rgb-deep-purple-color: "63, 101, 83"
+      indigo-color: "#3A6B5E"
+      rgb-indigo-color: "58, 107, 94"
+      blue-color: "#2E8F82"
+      rgb-blue-color: "46, 143, 130"
+      light-blue-color: "#3FA396"
+      rgb-light-blue-color: "63, 163, 150"
+      cyan-color: "#39ADA0"
+      rgb-cyan-color: "57, 173, 160"
+      error-color: "#B4592E"
+      rgb-error-color: "180, 89, 46"
+      warning-color: "#D9954B"
+      rgb-warning-color: "217, 149, 75"
+
+      # Backgrounds
+      primary-background-color: "#0A0B0C"
+      secondary-background-color: "#0D0F10"
+      clear-background-color: "#0A0B0C"
+      card-background-color: "#0D0F10"
+      ha-card-background: "#0D0F10"
+      lovelace-background: "#0A0B0C"
+
+      # Text
+      primary-text-color: "#E8E8E6"
+      secondary-text-color: "rgba(232,232,230,0.72)"
+      disabled-text-color: "rgba(232,232,230,0.35)"
+      text-primary-color: "#0A0B0C"
+
+      # Header / sidebar
+      app-header-background-color: "#0A0B0C"
+      app-header-text-color: "#E8E8E6"
+      sidebar-background-color: "#0A0B0C"
+      sidebar-text-color: "rgba(232,232,230,0.72)"
+      sidebar-selected-text-color: "#33C46E"
+      sidebar-selected-icon-color: "#33C46E"
+      sidebar-icon-color: "rgba(232,232,230,0.55)"
+
+      # Cards / borders
+      ha-card-border-radius: "18px"
+      ha-card-border-width: "1px"
+      ha-card-border-color: "rgba(255,255,255,0.09)"
+      divider-color: "rgba(255,255,255,0.08)"
+      outline-color: "rgba(255,255,255,0.12)"
+
+      # Controls / states
+      state-icon-color: "rgba(232,232,230,0.55)"
+      state-icon-active-color: "#33C46E"
+      paper-item-icon-active-color: "#33C46E"
+      paper-item-icon-color: "rgba(232,232,230,0.55)"
+      switch-checked-button-color: "#42CE79"
+      switch-checked-track-color: "rgba(51,196,110,0.35)"
+      switch-unchecked-button-color: "rgba(232,232,230,0.55)"
+      switch-unchecked-track-color: "rgba(255,255,255,0.12)"
+      slider-color: "#33C46E"
+      slider-secondary-color: "rgba(51,196,110,0.25)"
+      input-fill-color: "#0D0F10"
+      input-ink-color: "#E8E8E6"
+      input-label-ink-color: "rgba(232,232,230,0.65)"
+
+      # Badges / labels
+      label-badge-background-color: "#0D0F10"
+      label-badge-text-color: "#E8E8E6"
+      label-badge-red: "#B4592E"
+
+      # Tables / code
+      table-row-background-color: "#0A0B0C"
+      table-row-alternative-background-color: "#0D0F10"
+      markdown-code-background-color: "rgba(255,255,255,0.06)"
