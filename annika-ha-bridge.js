@@ -51,15 +51,71 @@
   }
   suppressOverscrollBounce()
 
-  function post(type) {
+  function post(type, distance) {
     try {
-      window.parent.postMessage({ source: SOURCE, type: type }, TARGET_ORIGIN)
+      var payload = { source: SOURCE, type: type }
+      if (typeof distance === 'number') payload.distance = distance
+      window.parent.postMessage(payload, TARGET_ORIGIN)
     } catch (err) {
       // Embedding context rejected the message (unexpected origin, etc). Nothing
       // to recover from here; the parent will simply fall back to its own
       // tunnel-health-based gate.
     }
   }
+
+  // Relays a downward pull-from-top gesture to components/pull-to-refresh.tsx
+  // in the parent, which already understands 'annika-pull-move'/'-end' — it
+  // just never had anything inside HA's own iframe sending them. Pure
+  // event-driven touch listeners, no polling: negligible cost while idle. The
+  // parent owns the actual refresh threshold; MAX_PULL/RESISTANCE here only
+  // need to roughly match components/pull-to-refresh.tsx's own constants so
+  // the visual "pull" feels the same whether it starts on HA or outside it.
+  var MAX_PULL = 110
+  var RESISTANCE = 0.5
+  var pullArmed = false
+  var pullStartY = null
+
+  function isAtScrollTop() {
+    var scroller = document.scrollingElement || document.documentElement
+    return scroller.scrollTop <= 0
+  }
+
+  document.addEventListener(
+    'touchstart',
+    function (event) {
+      if (event.touches.length !== 1) return
+      pullArmed = isAtScrollTop()
+      pullStartY = event.touches[0].clientY
+    },
+    { passive: true }
+  )
+
+  document.addEventListener(
+    'touchmove',
+    function (event) {
+      if (!pullArmed || pullStartY === null) return
+      var delta = event.touches[0].clientY - pullStartY
+
+      if (delta <= 0) {
+        pullArmed = false
+        post('annika-pull-move', 0)
+        return
+      }
+
+      post('annika-pull-move', Math.min(delta * RESISTANCE, MAX_PULL))
+      if (event.cancelable) event.preventDefault()
+    },
+    { passive: false }
+  )
+
+  function onPullEnd() {
+    if (!pullArmed) return
+    pullArmed = false
+    pullStartY = null
+    post('annika-pull-end')
+  }
+  document.addEventListener('touchend', onPullEnd, { passive: true })
+  document.addEventListener('touchcancel', onPullEnd, { passive: true })
 
   function attachConnectionListeners(connection) {
     if (connection.__annikaBridgeAttached) return
