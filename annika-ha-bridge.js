@@ -33,23 +33,29 @@
   var MAX_ATTEMPTS = 400 // ~100s ceiling looking for the root element/hass
 
   // Embedded in Annika's iframe, HA's own page is meant to feel like part of
-  // the parent app, not a separate, freely-draggable surface. But the elastic
-  // "rubber-band" bounce at the edges of a scroll/trackpad gesture is native
-  // browser behavior applied to *this* document — Annika's parent page has no
-  // way to reach in and turn it off from the outside, since this is a
-  // separate, cross-origin document. Turn it off from in here instead, as
-  // early as possible so there's no window where it's still visible.
-  function suppressOverscrollBounce() {
+  // the parent app, not a separate, freely-draggable surface. Two things fight
+  // that, both native to *this* document (Annika's parent page has no way to
+  // reach in and fix either from the outside, since this is a separate,
+  // cross-origin document — has to happen from in here):
+  //  - the elastic "rubber-band" bounce at the edges of a scroll/trackpad
+  //    gesture, even when there's nothing to actually scroll;
+  //  - some dashboard content ending up very slightly wider than the phone's
+  //    own viewport (a card, a table, whatever), which turns the whole page
+  //    sideways-scrollable/draggable instead of just clipping the excess.
+  // Both are fixed the same blunt, safe way: nothing in a HA dashboard needs
+  // page-level horizontal scroll — individual cards can still scroll
+  // themselves horizontally if they already do, this only clips the root.
+  function suppressOverscrollAndOverflow() {
     try {
       var style = document.createElement('style')
       style.setAttribute('data-annika-bridge', '')
-      style.textContent = 'html, body { overscroll-behavior: none !important; }'
+      style.textContent = 'html, body { overscroll-behavior: none !important; overflow-x: hidden !important; max-width: 100vw !important; }'
       ;(document.head || document.documentElement).appendChild(style)
     } catch (err) {
-      // Best effort — if this fails, HA just keeps its native bounce.
+      // Best effort — if this fails, HA just keeps its native behavior.
     }
   }
-  suppressOverscrollBounce()
+  suppressOverscrollAndOverflow()
 
   function post(type, distance) {
     try {
