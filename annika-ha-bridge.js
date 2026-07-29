@@ -69,6 +69,35 @@
     }
   }
 
+  // Lets lib/use-unit-frame.ts in the client repo remember which dashboard/
+  // view was on screen, so a reconnect (pull-to-refresh, a dropped tunnel, a
+  // plain reload) can request a fresh ticket that lands back on the same
+  // place instead of HA's default page. Only sent when the path actually
+  // changed, piggybacked on the same ~2s cadence as the `tick()` readiness
+  // poll below rather than its own listeners — navigating dashboards doesn't
+  // need to be reported faster than that.
+  //
+  // Deliberately `location.pathname` ONLY, never `location.search`: the
+  // gateway's ticket middleware never strips `?ticket=...` from the URL bar
+  // once it's been consumed (see the comment on `suppressOverscrollAndOverflow`
+  // era history in the backend's annika-gateway service — it's a dangling,
+  // harmless param by design, to dodge a service-worker redirect bug), so
+  // `location.search` here would always still have the *previous* ticket
+  // baked into it. Reporting that back as the "path" and having the next
+  // reconnect glue a *second* `?ticket=...` onto it is exactly the bug that
+  // broke this the first time around — keep it to the path only.
+  var lastPath = null
+  function postPath() {
+    var current = location.pathname
+    if (current === lastPath) return
+    lastPath = current
+    try {
+      window.parent.postMessage({ source: SOURCE, type: 'path', path: current }, TARGET_ORIGIN)
+    } catch (err) {
+      // Same best-effort as post() above.
+    }
+  }
+
   // Relays a downward pull-from-top gesture to components/pull-to-refresh.tsx
   // in the parent, which already understands 'annika-pull-move'/'-end' — it
   // just never had anything inside HA's own iframe sending them. Pure
@@ -171,6 +200,7 @@
       // disappears. Report it, then keep watching at a relaxed pace in case
       // HA ever swaps the connection object out from under us.
       post('ready')
+      postPath()
       setTimeout(tick, 2000)
       return
     }
