@@ -1,0 +1,3 @@
+install_resources:
+  name: Install resources
+  description: Install or update Annika shared resources on Home Assistant.
