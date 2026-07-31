@@ -24,6 +24,7 @@ SERVICE_SEND_EVENT = "send_event"
 JS_RESOURCES = (
     ("annika-ha-bridge.js", "/annika_static/annika-ha-bridge.js"),
     ("annika-automations-card.js", "/annika_static/annika-automations-card.js"),
+    ("annika-lights-card.js", "/annika_static/annika-lights-card.js"),
 )
 
 CONFIG_SCHEMA = vol.Schema(
