@@ -21,7 +21,10 @@ from .send_event import async_send_event
 SERVICE_INSTALL_RESOURCES = "install_resources"
 SERVICE_SEND_EVENT = "send_event"
 
-BRIDGE_URL_PATH = "/annika_static/annika-ha-bridge.js"
+JS_RESOURCES = (
+    ("annika-ha-bridge.js", "/annika_static/annika-ha-bridge.js"),
+    ("annika-automations-card.js", "/annika_static/annika-automations-card.js"),
+)
 
 CONFIG_SCHEMA = vol.Schema(
     {
@@ -58,12 +61,6 @@ async def async_setup(
 
     integration = await async_get_integration(hass, DOMAIN)
     integration_directory = integration.file_path
-    bridge_script = (
-            integration_directory
-            / "resources"
-            / "www"
-            / "annika-ha-bridge.js"
-    )
     source_theme = (
             integration_directory
             / "resources"
@@ -82,9 +79,17 @@ async def async_setup(
     )
 
     await hass.http.async_register_static_paths(
-        [StaticPathConfig(BRIDGE_URL_PATH, str(bridge_script), True)]
+        [
+            StaticPathConfig(
+                url_path,
+                str(integration_directory / "resources" / "www" / filename),
+                True,
+            )
+            for filename, url_path in JS_RESOURCES
+        ]
     )
-    add_extra_js_url(hass, f"{BRIDGE_URL_PATH}?v={integration.version}")
+    for _, url_path in JS_RESOURCES:
+        add_extra_js_url(hass, f"{url_path}?v={integration.version}")
 
     async def async_install_resources(call: ServiceCall | None = None) -> None:
         """Install Annika resources in the Home Assistant config directory."""
