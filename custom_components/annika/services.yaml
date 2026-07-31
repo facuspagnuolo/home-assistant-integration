@@ -1,3 +1,43 @@
 install_resources:
   name: Install resources
   description: Install or update Annika shared resources on Home Assistant.
+send_event:
+  name: Send event
+  description: Sign and send a unit event to Annika's API.
+  fields:
+    type:
+      name: Type
+      description: Event type (e.g. security, info).
+      required: true
+      selector:
+        text: null
+    message:
+      name: Message
+      description: Event message content.
+      required: true
+      selector:
+        text: null
+    title:
+      name: Title
+      description: Optional event title.
+      required: false
+      selector:
+        text: null
+    actor:
+      name: Actor
+      description: Optional alias of the person who emitted the event.
+      required: false
+      selector:
+        text: null
+    event_id:
+      name: Event ID
+      description: Optional idempotency key, defaults to a random UUID.
+      required: false
+      selector:
+        text: null
+    data:
+      name: Data
+      description: Optional object with extra event data.
+      required: false
+      selector:
+        object: null
