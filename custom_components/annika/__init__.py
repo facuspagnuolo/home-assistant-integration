@@ -28,6 +28,7 @@ JS_RESOURCES = (
     ("annika-ac-card.js", "/annika_static/annika-ac-card.js"),
     ("annika-heating-card.js", "/annika_static/annika-heating-card.js"),
     ("annika-cameras-card.js", "/annika_static/annika-cameras-card.js"),
+    ("annika-alarm-card.js", "/annika_static/annika-alarm-card.js"),
 )
 
 CONFIG_SCHEMA = vol.Schema(
