@@ -127,10 +127,13 @@ async def async_setup(
         SERVICE_INSTALL_RESOURCES,
         async_install_resources,
     )
+    async def async_handle_send_event(call: ServiceCall) -> None:
+        await async_send_event(hass, call)
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_SEND_EVENT,
-        lambda call: async_send_event(hass, call),
+        async_handle_send_event,
         schema=SEND_EVENT_SCHEMA,
     )
 
