@@ -73,15 +73,12 @@ async def async_setup(
             / "annika-dark.yaml"
     )
     destination_theme = Path(hass.config.path("themes")) / "annika-dark.yaml"
-    source_script = (
+    source_scripts_directory = (
             integration_directory
             / "resources"
             / "scripts"
-            / "send_notification.yaml"
     )
-    destination_script = (
-            Path(hass.config.path("scripts")) / "send_notification.yaml"
-    )
+    destination_packages_directory = Path(hass.config.path("packages"))
 
     await hass.http.async_register_static_paths(
         [
@@ -100,24 +97,27 @@ async def async_setup(
         """Install Annika resources in the Home Assistant config directory."""
 
         def copy_resources() -> None:
-            for source, destination in (
-                (source_theme, destination_theme),
-                (source_script, destination_script),
-            ):
-                if not source.exists():
-                    raise FileNotFoundError(f"Annika resource was not found at {source}")
+            if not source_theme.exists():
+                raise FileNotFoundError(f"Annika resource was not found at {source_theme}")
 
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source, destination)
+            destination_theme.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_theme, destination_theme)
+
+            destination_packages_directory.mkdir(parents=True, exist_ok=True)
+            for source_script in source_scripts_directory.glob("*.yaml"):
+                shutil.copy2(
+                    source_script,
+                    destination_packages_directory / source_script.name,
+                )
 
         await hass.async_add_executor_job(copy_resources)
         await hass.services.async_call("frontend", "reload_themes", blocking=True)
-        await hass.services.async_call("script", "reload", blocking=True)
 
         if call is not None:
             persistent_notification.async_create(
                 hass,
-                "Annika resources were installed or updated.",
+                "Annika resources were installed or updated. "
+                "Restart Home Assistant to apply script changes.",
                 title="Annika resources installed",
                 notification_id="annika_resources_installed",
             )

@@ -1,29 +1,30 @@
-send_notification:
-  alias: Send Notification
-  description: ""
-  mode: parallel
-  fields:
-    message:
-      required: true
-      selector:
-        text: null
-    title:
-      required: false
-      selector:
-        text: null
-    type:
-      required: false
-      default: info
-      selector:
-        text: null
-    actor:
-      required: false
-      selector:
-        text: null
-  sequence:
-    - action: annika.send_event
-      data:
-        type: "{{ type | default('info', true) }}"
-        message: "{{ message }}"
-        actor: "{{ actor | default('', true) }}"
-        title: "{{ title | default('', true) }}"
+script:
+  send_notification:
+    alias: Send Notification
+    description: ""
+    mode: parallel
+    fields:
+      message:
+        required: true
+        selector:
+          text: null
+      title:
+        required: false
+        selector:
+          text: null
+      type:
+        required: false
+        default: info
+        selector:
+          text: null
+      actor:
+        required: false
+        selector:
+          text: null
+    sequence:
+      - action: annika.send_event
+        data:
+          type: "{{ type | default('info', true) }}"
+          message: "{{ message }}"
+          actor: "{{ actor | default('', true) }}"
+          title: "{{ title | default('', true) }}"
