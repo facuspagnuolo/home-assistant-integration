@@ -35,6 +35,25 @@ send_event:
       required: false
       selector:
         text: null
+    url:
+      name: URL
+      description: >-
+        Optional Home Assistant dashboard path to open when the resulting
+        notification is tapped (e.g. /dashboard-doorbell).
+      required: false
+      selector:
+        text: null
+    image_url:
+      name: Image URL
+      description: >-
+        Optional snapshot/camera image for the notification. Either a path on
+        this unit's own Home Assistant (e.g. /media/local/snapshots/x.jpg) or
+        an absolute https:// URL. Must be reachable without a Home Assistant
+        session — it's fetched directly by the phone's push service, not by
+        the app.
+      required: false
+      selector:
+        text: null
     data:
       name: Data
       description: Optional object with extra event data.

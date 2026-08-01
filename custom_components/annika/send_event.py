@@ -47,6 +47,10 @@ async def async_send_event(hass: HomeAssistant, call: ServiceCall) -> None:
         event["title"] = call.data["title"]
     if call.data.get("actor"):
         event["actor"] = call.data["actor"]
+    if call.data.get("url"):
+        event["url"] = call.data["url"]
+    if call.data.get("image_url"):
+        event["imageUrl"] = call.data["image_url"]
     if call.data.get("data"):
         event["data"] = call.data["data"]
 

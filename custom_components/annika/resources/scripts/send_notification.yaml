@@ -21,6 +21,14 @@ script:
         required: false
         selector:
           text: null
+      url:
+        required: false
+        selector:
+          text: null
+      image_url:
+        required: false
+        selector:
+          text: null
     sequence:
       - action: annika.send_event
         data:
@@ -28,3 +36,5 @@ script:
           message: "{{ message }}"
           actor: "{{ actor | default('', true) }}"
           title: "{{ title | default('', true) }}"
+          url: "{{ url | default('', true) }}"
+          image_url: "{{ image_url | default('', true) }}"
