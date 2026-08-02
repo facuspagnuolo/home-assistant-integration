@@ -45,7 +45,16 @@
     try {
       var style = document.createElement('style')
       style.setAttribute('data-annika-bridge', '')
-      style.textContent = 'html, body { overscroll-behavior: none !important; overflow-x: hidden !important; max-width: 100vw !important; }'
+      // `100%` here, not `100vw`: `vw` is defined against the *layout*
+      // viewport, which on mobile Safari can measure wider than what's
+      // actually visible inside an iframe (browser-chrome allowances that
+      // don't apply to embedded content at all). That mismatch is exactly
+      // what caused dashboard headers/cards to appear clipped on one edge —
+      // this box was being told it could be wider than the iframe truly is,
+      // then got position/overflow-clipped down to the real size. `100%`
+      // resolves against the iframe's own actual rendered box, no viewport
+      // unit ambiguity involved.
+      style.textContent = 'html, body { overscroll-behavior: none !important; overflow-x: hidden !important; max-width: 100% !important; }'
       ;(document.head || document.documentElement).appendChild(style)
     } catch (err) {
       // Best effort — if this fails, HA just keeps its native behavior.
@@ -177,6 +186,32 @@
     })
   }
 
+  // Some Lovelace cards (confirmed on the camera dashboard's snapshot
+  // filmstrip — it renders scrolled to show a sliver of the *previous* image
+  // instead of the latest one) compute a one-time layout/scroll measurement
+  // against the iframe's box size. That measurement can run before this
+  // *particular* embedding has settled to its final size — plain <img>/CSS
+  // width isn't the same signal a card's own JS measures off of, and nothing
+  // here can reach into that card's internals directly (HA is a stock,
+  // unmodified app; no card-specific hooks to call). A `resize` event is the
+  // generic, low-risk nudge: any HA component that reacts to viewport size at
+  // all re-runs its own measurement against the now-stable layout, without
+  // this script needing to know which card or how. Fired once, shortly after
+  // the first sign HA itself is fully loaded, not on every tick — cheap
+  // safety margin, not a recurring disruption to scroll position elsewhere.
+  var resizeNudged = false
+  function nudgeResizeOnce() {
+    if (resizeNudged) return
+    resizeNudged = true
+    setTimeout(function () {
+      try {
+        window.dispatchEvent(new Event('resize'))
+      } catch (err) {
+        // Best effort.
+      }
+    }, 300)
+  }
+
   var attempts = 0
   var lastConnection = null
 
@@ -197,6 +232,7 @@
       // HA ever swaps the connection object out from under us.
       post('ready')
       postPath()
+      nudgeResizeOnce()
       setTimeout(tick, 2000)
       return
     }
