@@ -1,61 +1,59 @@
-// Annika lights card.
+// Annika covers card.
 //
-// Renders a map of area name -> list of entity ids (lights, fans, dimmers,
-// switches) as native HA tile cards, grouped under an area header. Tiles
-// are laid out in a responsive, wrapping row (auto-fill grid): a
-// fixed/consistent tile width, as many per row as fit the available width,
-// wrapping to the next line instead of a fixed column count. Every tile
-// gets exactly one feature so all tiles end up the same height — header
-// (icon + name + state) plus a single row of controls underneath, no
-// taller and no shorter regardless of how many buttons that feature has.
+// Renders a map of area name -> list of cover entity ids (shutters, awnings,
+// blinds, garage doors, etc.) as native HA tile cards, grouped under an area
+// header. Tiles are laid out in a responsive, wrapping row (auto-fill grid):
+// a fixed/consistent tile width, as many per row as fit the available
+// width, wrapping to the next line instead of a fixed column count. Every
+// tile gets exactly one feature so all tiles end up the same height —
+// header (icon + name + state) plus a single row of controls underneath,
+// no taller and no shorter regardless of how many buttons that feature has.
 //
 // The feature shown on each tile is derived from the entity's own
-// domain/capabilities:
-//   - light with a dimmable color mode -> light-brightness feature
-//   - light with only "onoff" support  -> toggle feature
-//   - fan reporting a speed percentage -> fan-speed feature
-//   - fan without speed support        -> toggle feature
-//   - anything else (switch, etc.)     -> toggle feature
+// supported_features bitmask:
+//   - open/close/stop supported      -> cover-open-close feature (buttons)
+//   - else tilt open/close/stop      -> cover-tilt feature (buttons)
+// Only one of the two is picked (never both) so no tile grows a second
+// feature row.
 //
 // Usage in a dashboard view:
-//   type: custom:annika-lights-card
+//   type: custom:annika-covers-card
 //   tile_min_width: 160  # optional, px
 //   areas:
 //     Living Room:
-//       - light.living_room_main
-//       - light.living_room_dimmer
-//       - fan.living_room_ceiling
-//     Kitchen:
-//       - switch.kitchen_lights
+//       - cover.living_room_shutter
+//       - cover.living_room_awning
+//     Bedroom:
+//       - cover.bedroom_blind
 ;(() => {
-  function featuresFor(hass, entityId) {
-    const domain = entityId.split('.')[0]
-    const stateObj = hass.states[entityId]
-
-    if (domain === 'light') {
-      const modes = stateObj?.attributes?.supported_color_modes || []
-      if (modes.some((mode) => mode !== 'onoff')) {
-        return [{ type: 'light-brightness' }]
-      }
-      return [{ type: 'toggle' }]
-    }
-
-    if (domain === 'fan') {
-      if (stateObj?.attributes?.percentage != null) {
-        return [{ type: 'fan-speed' }]
-      }
-      return [{ type: 'toggle' }]
-    }
-
-    return [{ type: 'toggle' }]
-  }
+  // homeassistant.components.cover.const.CoverEntityFeature
+  const SUPPORT_OPEN = 1
+  const SUPPORT_CLOSE = 2
+  const SUPPORT_STOP = 8
+  const SUPPORT_OPEN_TILT = 16
+  const SUPPORT_CLOSE_TILT = 32
+  const SUPPORT_STOP_TILT = 64
 
   const DEFAULT_TILE_MIN_WIDTH = 160
 
-  class AnnikaLightsCard extends HTMLElement {
+  function featuresFor(hass, entityId) {
+    const stateObj = hass.states[entityId]
+    const supported = stateObj?.attributes?.supported_features || 0
+
+    if (supported & (SUPPORT_OPEN | SUPPORT_CLOSE | SUPPORT_STOP)) {
+      return [{ type: 'cover-open-close' }]
+    }
+    if (supported & (SUPPORT_OPEN_TILT | SUPPORT_CLOSE_TILT | SUPPORT_STOP_TILT)) {
+      return [{ type: 'cover-tilt' }]
+    }
+
+    return []
+  }
+
+  class AnnikaCoversCard extends HTMLElement {
     setConfig(config) {
       if (!config.areas || typeof config.areas !== 'object' || Array.isArray(config.areas)) {
-        throw new Error('annika-lights-card: "areas" must be a map of area name to a list of entity ids')
+        throw new Error('annika-covers-card: "areas" must be a map of area name to a list of entity ids')
       }
       this._config = config
       this._built = false
@@ -126,12 +124,12 @@
     }
   }
 
-  customElements.define('annika-lights-card', AnnikaLightsCard)
+  customElements.define('annika-covers-card', AnnikaCoversCard)
 
   window.customCards = window.customCards || []
   window.customCards.push({
-    type: 'annika-lights-card',
-    name: 'Annika Lights',
-    description: 'Lists lights/fans/switches grouped by area as native tile cards with area-appropriate features.',
+    type: 'annika-covers-card',
+    name: 'Annika Covers',
+    description: 'Lists covers (shutters, awnings, blinds) grouped by area as native tile cards in a responsive wrapping row with open/close/tilt button features.',
   })
 })()
