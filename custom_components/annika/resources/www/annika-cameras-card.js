@@ -8,6 +8,9 @@
 // Usage in a dashboard view:
 //   type: custom:annika-cameras-card
 //   columns: 3
+//   grid_options:        # optional, sections view only; card width within
+//     columns: 6         # the section's 12-unit grid (12/full = whole row,
+//                        # 6 = half, 4 = a third). Defaults to full.
 //   cameras:
 //     - camera: camera.e1_outdoor_se_poe_fluent
 //       title: E1
@@ -67,6 +70,18 @@
     getCardSize() {
       const columns = this._config?.columns || 3
       return Math.ceil((this._config?.cameras?.length || 0) / columns) * 3
+    }
+
+    getGridOptions() {
+      return {
+        columns: 'full',
+      }
+    }
+
+    getLayoutOptions() {
+      return {
+        grid_columns: 'full',
+      }
     }
 
     async _render() {

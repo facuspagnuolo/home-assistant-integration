@@ -8,6 +8,9 @@
 // Usage in a dashboard view:
 //   type: custom:annika-automations-card
 //   title: Automations
+//   grid_options:        # optional, sections view only; card width within
+//     columns: 6         # the section's 12-unit grid (12/full = whole row,
+//                        # 6 = half, 4 = a third). Defaults to full.
 //   entities:
 //     - automation.front_door_alert
 //     - automation.night_lights
@@ -33,6 +36,18 @@
 
     getCardSize() {
       return Math.ceil((this._config?.entities?.length || 0) / 2) * 2
+    }
+
+    getGridOptions() {
+      return {
+        columns: 'full',
+      }
+    }
+
+    getLayoutOptions() {
+      return {
+        grid_columns: 'full',
+      }
     }
 
     async _render() {

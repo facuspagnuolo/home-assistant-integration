@@ -9,6 +9,9 @@
 //
 // Usage in a dashboard view:
 //   type: custom:annika-alarm-card
+//   grid_options:        # optional, sections view only; card width within
+//     columns: 6         # the section's 12-unit grid (12/full = whole row,
+//                        # 6 = half, 4 = a third). Defaults to full.
 //   alarm:
 //     entity: alarm_control_panel.home_alarm
 //     name: Alarm
@@ -63,6 +66,18 @@
     getCardSize() {
       const sensors = (this._config?.motion_sensors?.length || 0) + (this._config?.door_sensors?.length || 0)
       return Math.max(6, sensors + (this._config?.sirens?.length || 0) + 4)
+    }
+
+    getGridOptions() {
+      return {
+        columns: 'full',
+      }
+    }
+
+    getLayoutOptions() {
+      return {
+        grid_columns: 'full',
+      }
     }
 
     async _render() {

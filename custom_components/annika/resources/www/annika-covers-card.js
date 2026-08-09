@@ -19,6 +19,9 @@
 // Usage in a dashboard view:
 //   type: custom:annika-covers-card
 //   tile_min_width: 160  # optional, px
+//   grid_options:        # optional, sections view only; card width within
+//     columns: 6         # the section's 12-unit grid (12/full = whole row,
+//                        # 6 = half, 4 = a third). Defaults to full.
 //   areas:
 //     Living Room:
 //       - cover.living_room_shutter
@@ -73,6 +76,18 @@
       const areas = Object.values(this._config?.areas || {})
       const totalEntities = areas.reduce((sum, list) => sum + list.length, 0)
       return Math.ceil(totalEntities / 4) * 2 + areas.length
+    }
+
+    getGridOptions() {
+      return {
+        columns: 'full',
+      }
+    }
+
+    getLayoutOptions() {
+      return {
+        grid_columns: 'full',
+      }
     }
 
     async _render() {
