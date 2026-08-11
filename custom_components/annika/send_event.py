@@ -25,18 +25,56 @@ from .const import CONF_API_URL, CONF_UNIT_ID, CONF_WEBHOOK_SECRET, DOMAIN
 TIMEOUT_SECONDS = 10
 
 
-def _sign(secret: str, timestamp: str, body: bytes) -> str:
-    return hmac.new(
-        secret.encode(),
-        f"{timestamp}.".encode() + body,
-        hashlib.sha256,
-    ).hexdigest()
+class AnnikaEventClient:
+    """Sign and send unit events to Annika's API."""
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self._hass = hass
+
+    async def async_send(self, event: dict) -> None:
+        """Post a signed unit event."""
+
+        unit_config = self._hass.data[DOMAIN]
+        body = json.dumps(event).encode()
+        timestamp = str(int(time.time()))
+        url = (
+            f"{unit_config[CONF_API_URL].rstrip('/')}"
+            f"/units/{unit_config[CONF_UNIT_ID]}/events"
+        )
+
+        session = async_get_clientsession(self._hass)
+        try:
+            async with session.post(
+                url,
+                data=body,
+                headers={
+                    "content-type": "application/json",
+                    "x-annika-timestamp": timestamp,
+                    "x-annika-signature": self._sign(
+                        unit_config[CONF_WEBHOOK_SECRET], timestamp, body
+                    ),
+                },
+                timeout=aiohttp.ClientTimeout(total=TIMEOUT_SECONDS),
+            ) as response:
+                if response.status >= 400:
+                    detail = (await response.text()).strip()
+                    raise HomeAssistantError(
+                        f"Annika event failed with status {response.status}: "
+                        f"{detail or response.reason}"
+                    )
+        except aiohttp.ClientError as error:
+            raise HomeAssistantError(f"Annika event failed: {error}") from error
+
+    def _sign(self, secret: str, timestamp: str, body: bytes) -> str:
+        return hmac.new(
+            secret.encode(),
+            f"{timestamp}.".encode() + body,
+            hashlib.sha256,
+        ).hexdigest()
 
 
 async def async_send_event(hass: HomeAssistant, call: ServiceCall) -> None:
     """Sign and post a unit event to Annika's API."""
-
-    unit_config = hass.data[DOMAIN]
 
     event = {
         "eventId": call.data.get("event_id") or str(uuid.uuid4()),
@@ -54,27 +92,4 @@ async def async_send_event(hass: HomeAssistant, call: ServiceCall) -> None:
     if call.data.get("data"):
         event["data"] = call.data["data"]
 
-    body = json.dumps(event).encode()
-    timestamp = str(int(time.time()))
-    url = (
-        f"{unit_config[CONF_API_URL].rstrip('/')}"
-        f"/units/{unit_config[CONF_UNIT_ID]}/events"
-    )
-
-    session = async_get_clientsession(hass)
-    try:
-        async with session.post(
-            url,
-            data=body,
-            headers={
-                "content-type": "application/json",
-                "x-annika-timestamp": timestamp,
-                "x-annika-signature": _sign(
-                    unit_config[CONF_WEBHOOK_SECRET], timestamp, body
-                ),
-            },
-            timeout=aiohttp.ClientTimeout(total=TIMEOUT_SECONDS),
-        ) as response:
-            response.raise_for_status()
-    except aiohttp.ClientError as error:
-        raise HomeAssistantError(f"Annika event failed: {error}") from error
+    await AnnikaEventClient(hass).async_send(event)

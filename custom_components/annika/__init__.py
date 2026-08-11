@@ -10,12 +10,14 @@ import voluptuous as vol
 from homeassistant.components import persistent_notification
 from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.components.http import StaticPathConfig
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
 
 from .const import CONF_API_URL, CONF_UNIT_ID, CONF_WEBHOOK_SECRET, DOMAIN
+from .heartbeat import HeartbeatReporter
 from .send_event import async_send_event
 
 SERVICE_INSTALL_RESOURCES = "install_resources"
@@ -144,6 +146,10 @@ async def async_setup(
         async_handle_send_event,
         schema=SEND_EVENT_SCHEMA,
     )
+
+    heartbeat_reporter = HeartbeatReporter(hass)
+    await heartbeat_reporter.async_start()
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, heartbeat_reporter.async_stop)
 
     await async_install_resources()
 
