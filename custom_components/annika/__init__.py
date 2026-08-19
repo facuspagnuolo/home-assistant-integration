@@ -24,6 +24,8 @@ SERVICE_INSTALL_RESOURCES = "install_resources"
 SERVICE_SEND_EVENT = "send_event"
 
 JS_RESOURCES = (
+    ("annika-common.js", "/annika_static/annika-common.js"),
+    ("annika-entity-toggle-feature.js", "/annika_static/annika-entity-toggle-feature.js"),
     ("annika-ha-bridge.js", "/annika_static/annika-ha-bridge.js"),
     ("annika-automations-card.js", "/annika_static/annika-automations-card.js"),
     ("annika-lights-card.js", "/annika_static/annika-lights-card.js"),

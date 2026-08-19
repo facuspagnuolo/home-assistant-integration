@@ -5,22 +5,37 @@
 // given explicitly via `entities` in the card config — this card does not
 // discover or filter entities on its own.
 //
+// Entities use the shared Annika shape (see annika-common.js): either a
+// bare entity id or `{ entity, name?, icon?, color? }`, mixable in the
+// same list.
+//
 // Usage in a dashboard view:
 //   type: custom:annika-automations-card
 //   title: Automations
+//   columns: 2           # optional, tiles per row (default 2)
 //   grid_options:        # optional, sections view only; card width within
 //     columns: 6         # the section's 12-unit grid (12/full = whole row,
 //                        # 6 = half, 4 = a third). Defaults to full.
 //   entities:
 //     - automation.front_door_alert
-//     - automation.night_lights
+//     - entity: automation.night_lights
+//       name: Night Lights
+//       icon: mdi:weather-night
 ;(() => {
+  const CARD = 'annika-automations-card'
+
+  function annika() {
+    if (!window.Annika) throw new Error(`${CARD}: annika-common.js is not loaded`)
+    return window.Annika
+  }
+
   class AnnikaAutomationsCard extends HTMLElement {
     setConfig(config) {
       if (!Array.isArray(config.entities) || config.entities.length === 0) {
-        throw new Error('annika-automations-card: "entities" must be a non-empty list of automation entity ids')
+        throw new Error(`${CARD}: "entities" must be a non-empty list of automations`)
       }
       this._config = config
+      this._entities = annika().normalizeItems(config.entities, CARD)
       this._built = false
       this._render()
     }
@@ -35,7 +50,7 @@
     }
 
     getCardSize() {
-      return Math.ceil((this._config?.entities?.length || 0) / 2) * 2
+      return Math.ceil((this._entities?.length || 0) / (this._config?.columns || 2)) * 2
     }
 
     getGridOptions() {
@@ -54,28 +69,19 @@
       if (!this._hass || !this._config || this._built) return
       this._built = true
 
+      const { tileConfig, gridConfig, createHeader } = annika()
       const helpers = await window.loadCardHelpers()
-      this._grid = await helpers.createCardElement({
-        type: 'grid',
-        columns: 2,
-        square: false,
-        cards: this._config.entities.map((entityId) => ({
-          type: 'tile',
-          entity: entityId,
-          features: [{ type: 'toggle' }],
-          features_position: 'bottom',
-        })),
-      })
+      this._grid = await helpers.createCardElement(
+        gridConfig(
+          this._entities.map((item) => tileConfig(item, { features: [{ type: 'toggle' }] })),
+          this._config.columns || 2,
+        ),
+      )
       this._grid.hass = this._hass
 
       this.innerHTML = ''
       if (this._config.title) {
-        const header = document.createElement('div')
-        header.textContent = this._config.title
-        header.style.fontSize = '1.2em'
-        header.style.fontWeight = '500'
-        header.style.margin = '0 0 8px 4px'
-        this.appendChild(header)
+        this.appendChild(createHeader(this._config.title, '0 0 8px 4px'))
       }
       this.appendChild(this._grid)
     }

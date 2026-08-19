@@ -1,6 +1,6 @@
 // Annika covers card.
 //
-// Renders a map of area name -> list of cover entity ids (shutters, awnings,
+// Renders a map of area name -> list of cover entities (shutters, awnings,
 // blinds, garage doors, etc.) as native HA tile cards, grouped under an area
 // header. Tiles are laid out in a responsive, wrapping row (auto-fill grid):
 // a fixed/consistent tile width, as many per row as fit the available
@@ -8,6 +8,10 @@
 // tile gets exactly one feature so all tiles end up the same height —
 // header (icon + name + state) plus a single row of controls underneath,
 // no taller and no shorter regardless of how many buttons that feature has.
+//
+// Entities use the shared Annika shape (see annika-common.js): either a
+// bare entity id or `{ entity, name?, icon?, color? }`, mixable in the
+// same list.
 //
 // The feature shown on each tile is derived from the entity's own
 // supported_features bitmask:
@@ -25,10 +29,14 @@
 //   areas:
 //     Living Room:
 //       - cover.living_room_shutter
-//       - cover.living_room_awning
+//       - entity: cover.living_room_awning
+//         name: Awning
+//         icon: mdi:awning-outline
 //     Bedroom:
 //       - cover.bedroom_blind
 ;(() => {
+  const CARD = 'annika-covers-card'
+
   // homeassistant.components.cover.const.CoverEntityFeature
   const SUPPORT_OPEN = 1
   const SUPPORT_CLOSE = 2
@@ -38,6 +46,11 @@
   const SUPPORT_STOP_TILT = 64
 
   const DEFAULT_TILE_MIN_WIDTH = 160
+
+  function annika() {
+    if (!window.Annika) throw new Error(`${CARD}: annika-common.js is not loaded`)
+    return window.Annika
+  }
 
   function featuresFor(hass, entityId) {
     const stateObj = hass.states[entityId]
@@ -56,9 +69,15 @@
   class AnnikaCoversCard extends HTMLElement {
     setConfig(config) {
       if (!config.areas || typeof config.areas !== 'object' || Array.isArray(config.areas)) {
-        throw new Error('annika-covers-card: "areas" must be a map of area name to a list of entity ids')
+        throw new Error(`${CARD}: "areas" must be a map of area name to a list of entities`)
       }
       this._config = config
+      this._areas = Object.fromEntries(
+        Object.entries(config.areas).map(([area, items]) => [
+          area,
+          annika().normalizeItems(items, CARD, `areas.${area}`),
+        ]),
+      )
       this._built = false
       this._render()
     }
@@ -73,7 +92,7 @@
     }
 
     getCardSize() {
-      const areas = Object.values(this._config?.areas || {})
+      const areas = Object.values(this._areas || {})
       const totalEntities = areas.reduce((sum, list) => sum + list.length, 0)
       return Math.ceil(totalEntities / 4) * 2 + areas.length
     }
@@ -94,6 +113,7 @@
       if (!this._hass || !this._config || this._built) return
       this._built = true
 
+      const { tileConfig, createHeader } = annika()
       const helpers = await window.loadCardHelpers()
       const minWidth = this._config.tile_min_width || DEFAULT_TILE_MIN_WIDTH
 
@@ -111,24 +131,16 @@
       `
       this._tiles = []
 
-      for (const [area, entityIds] of Object.entries(this._config.areas)) {
-        const header = document.createElement('div')
-        header.textContent = area
-        header.style.fontSize = '1.2em'
-        header.style.fontWeight = '500'
-        header.style.margin = '16px 0 8px 4px'
-        this.appendChild(header)
+      for (const [area, items] of Object.entries(this._areas)) {
+        this.appendChild(createHeader(area))
 
         const row = document.createElement('div')
         row.className = 'annika-tile-row'
 
-        for (const entityId of entityIds) {
-          const tile = await helpers.createCardElement({
-            type: 'tile',
-            entity: entityId,
-            features: featuresFor(this._hass, entityId),
-            features_position: 'bottom',
-          })
+        for (const item of items) {
+          const tile = await helpers.createCardElement(
+            tileConfig(item, { features: featuresFor(this._hass, item.entity) }),
+          )
           tile.hass = this._hass
           this._tiles.push(tile)
           row.appendChild(tile)

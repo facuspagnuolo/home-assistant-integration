@@ -6,6 +6,10 @@
 // features that specific thermostat supports — this card only handles the
 // layout.
 //
+// Entities use the shared Annika shape (see annika-common.js): either a
+// bare entity id or `{ entity, name?, icon?, color? }`, mixable in the
+// same list.
+//
 // Usage in a dashboard view:
 //   type: custom:annika-heating-card
 //   columns: 3
@@ -17,15 +21,22 @@
 //       name: Playroom
 //       icon: mdi:nintendo-game-boy
 //       color: orange
-//     - entity: climate.office_thermostat
-//       name: Office
+//     - climate.office_thermostat
 ;(() => {
+  const CARD = 'annika-heating-card'
+
+  function annika() {
+    if (!window.Annika) throw new Error(`${CARD}: annika-common.js is not loaded`)
+    return window.Annika
+  }
+
   class AnnikaHeatingCard extends HTMLElement {
     setConfig(config) {
       if (!Array.isArray(config.entities) || config.entities.length === 0) {
-        throw new Error('annika-heating-card: "entities" must be a non-empty list of { entity, name?, icon?, color? }')
+        throw new Error(`${CARD}: "entities" must be a non-empty list of climate entities`)
       }
       this._config = config
+      this._entities = annika().normalizeItems(config.entities, CARD)
       this._render()
     }
 
@@ -40,7 +51,7 @@
 
     getCardSize() {
       const columns = this._config?.columns || 3
-      return Math.ceil((this._config?.entities?.length || 0) / columns) * 3
+      return Math.ceil((this._entities?.length || 0) / columns) * 3
     }
 
     getGridOptions() {
@@ -58,29 +69,19 @@
     async _render() {
       if (!this._hass || !this._config || this._grid) return
 
+      const { gridConfig, createHeader } = annika()
       const helpers = await window.loadCardHelpers()
-      this._grid = await helpers.createCardElement({
-        type: 'grid',
-        columns: this._config.columns || 3,
-        square: false,
-        cards: this._config.entities.map((item) => ({
-          type: 'custom:annika-ac-card',
-          entity: item.entity,
-          name: item.name,
-          icon: item.icon,
-          color: item.color,
-        })),
-      })
+      this._grid = await helpers.createCardElement(
+        gridConfig(
+          this._entities.map((item) => ({ type: 'custom:annika-ac-card', ...item })),
+          this._config.columns || 3,
+        ),
+      )
       this._grid.hass = this._hass
 
       this.innerHTML = ''
       if (this._config.title) {
-        const header = document.createElement('div')
-        header.textContent = this._config.title
-        header.style.fontSize = '1.2em'
-        header.style.fontWeight = '500'
-        header.style.margin = '0 0 8px 4px'
-        this.appendChild(header)
+        this.appendChild(createHeader(this._config.title, '0 0 8px 4px'))
       }
       this.appendChild(this._grid)
     }

@@ -5,6 +5,11 @@
 // sensors are all optional — only the ones actually given in config (and
 // present in hass.states) are shown; nothing is hardcoded to always appear.
 //
+// Cameras and their sensors use the shared Annika shape (see
+// annika-common.js): either a bare entity id or
+// `{ entity, name?, icon?, color? }`. For a camera, `name` is used as the
+// card title. The legacy `camera:`/`title:` keys are still accepted.
+//
 // Usage in a dashboard view:
 //   type: custom:annika-cameras-card
 //   columns: 3
@@ -12,16 +17,20 @@
 //     columns: 6         # the section's 12-unit grid (12/full = whole row,
 //                        # 6 = half, 4 = a third). Defaults to full.
 //   cameras:
-//     - camera: camera.e1_outdoor_se_poe_fluent
-//       title: E1
+//     - entity: camera.e1_outdoor_se_poe_fluent
+//       name: E1
 //       motion: binary_sensor.e1_outdoor_se_poe_motion
 //       person: binary_sensor.e1_outdoor_se_poe_person
 //       vehicle: binary_sensor.e1_outdoor_se_poe_vehicle
 //       animal: binary_sensor.e1_outdoor_se_poe_animal
-//     - camera: camera.e1_outdoor_se_poe_fluent_2
-//       title: E2
-//       motion: binary_sensor.e1_outdoor_se_poe_motion_2
+//     - entity: camera.e1_outdoor_se_poe_fluent_2
+//       name: E2
+//       motion:
+//         entity: binary_sensor.e1_outdoor_se_poe_motion_2
+//         icon: mdi:run-fast
 ;(() => {
+  const CARD = 'annika-cameras-card'
+
   const SENSOR_ICONS = {
     motion: 'mdi:motion-sensor',
     person: 'mdi:account',
@@ -29,32 +38,49 @@
     animal: 'mdi:paw',
   }
 
-  function pictureGlanceConfig(hass, camera) {
-    const entities = []
-    for (const [kind, icon] of Object.entries(SENSOR_ICONS)) {
-      const entityId = camera[kind]
-      if (entityId && hass.states[entityId]) {
-        entities.push({ entity: entityId, icon })
-      }
-    }
+  function annika() {
+    if (!window.Annika) throw new Error(`${CARD}: annika-common.js is not loaded`)
+    return window.Annika
+  }
 
+  // { camera|entity, title|name, motion?, person?, vehicle?, animal? } ->
+  // { entity, name?, icon?, color?, sensors: [{ entity, icon, name? }] }
+  function normalizeCamera(camera) {
+    const { normalizeItem } = annika()
+
+    const raw = typeof camera === 'string' ? { entity: camera } : { ...camera }
+    if (raw.entity === undefined && raw.camera !== undefined) raw.entity = raw.camera
+    if (raw.name === undefined && raw.title !== undefined) raw.name = raw.title
+
+    const item = normalizeItem(raw, CARD)
+    item.sensors = Object.entries(SENSOR_ICONS)
+      .filter(([kind]) => raw[kind] !== undefined && raw[kind] !== null)
+      .map(([kind, icon]) => ({ icon, ...normalizeItem(raw[kind], CARD) }))
+
+    return item
+  }
+
+  function pictureGlanceConfig(hass, camera) {
     return {
       type: 'picture-glance',
-      entity: camera.camera,
-      camera_image: camera.camera,
+      entity: camera.entity,
+      camera_image: camera.entity,
       camera_view: 'auto',
-      title: camera.title,
+      title: camera.name,
       tap_action: { action: 'more-info' },
-      entities,
+      entities: camera.sensors.filter((sensor) => hass.states[sensor.entity]),
     }
   }
 
   class AnnikaCamerasCard extends HTMLElement {
     setConfig(config) {
       if (!Array.isArray(config.cameras) || config.cameras.length === 0) {
-        throw new Error('annika-cameras-card: "cameras" must be a non-empty list of { camera, title?, motion?, person?, vehicle?, animal? }')
+        throw new Error(
+          `${CARD}: "cameras" must be a non-empty list of { entity, name?, motion?, person?, vehicle?, animal? }`,
+        )
       }
       this._config = config
+      this._cameras = config.cameras.map(normalizeCamera)
       this._render()
     }
 
@@ -69,7 +95,7 @@
 
     getCardSize() {
       const columns = this._config?.columns || 3
-      return Math.ceil((this._config?.cameras?.length || 0) / columns) * 3
+      return Math.ceil((this._cameras?.length || 0) / columns) * 3
     }
 
     getGridOptions() {
@@ -87,23 +113,19 @@
     async _render() {
       if (!this._hass || !this._config || this._grid) return
 
+      const { gridConfig, createHeader } = annika()
       const helpers = await window.loadCardHelpers()
-      this._grid = await helpers.createCardElement({
-        type: 'grid',
-        columns: this._config.columns || 3,
-        square: false,
-        cards: this._config.cameras.map((camera) => pictureGlanceConfig(this._hass, camera)),
-      })
+      this._grid = await helpers.createCardElement(
+        gridConfig(
+          this._cameras.map((camera) => pictureGlanceConfig(this._hass, camera)),
+          this._config.columns || 3,
+        ),
+      )
       this._grid.hass = this._hass
 
       this.innerHTML = ''
       if (this._config.title) {
-        const header = document.createElement('div')
-        header.textContent = this._config.title
-        header.style.fontSize = '1.2em'
-        header.style.fontWeight = '500'
-        header.style.margin = '0 0 8px 4px'
-        this.appendChild(header)
+        this.appendChild(createHeader(this._config.title, '0 0 8px 4px'))
       }
       this.appendChild(this._grid)
     }
