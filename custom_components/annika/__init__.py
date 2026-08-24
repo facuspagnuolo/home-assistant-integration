@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 from pathlib import Path
 
@@ -33,6 +34,7 @@ JS_RESOURCES = (
     ("annika-ac-card.js", "/annika_static/annika-ac-card.js"),
     ("annika-heating-card.js", "/annika_static/annika-heating-card.js"),
     ("annika-cameras-card.js", "/annika_static/annika-cameras-card.js"),
+    ("annika-remote-card.js", "/annika_static/annika-remote-card.js"),
     ("annika-alarm-card.js", "/annika_static/annika-alarm-card.js"),
 )
 
@@ -68,6 +70,25 @@ SEND_EVENT_SCHEMA = vol.Schema(
 )
 
 
+
+def _resource_version(path: Path, version: str) -> str:
+    """Cache-busting token for a JS resource.
+
+    The integration version alone is not enough: the frontend caches these
+    files aggressively (and so does the Annika app's webview), so editing a
+    card without releasing a new version leaves clients running the old file
+    against a new dashboard config. Hashing the file's contents means every
+    edit gets its own URL, released or not.
+    """
+
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()[:8]
+    except OSError:
+        return version
+
+    return f"{version}.{digest}"
+
+
 async def async_setup(
         hass: HomeAssistant,
         config: ConfigType,
@@ -97,13 +118,25 @@ async def async_setup(
             StaticPathConfig(
                 url_path,
                 str(integration_directory / "resources" / "www" / filename),
-                True,
+                # No long-lived cache headers: these files change whenever a
+                # card is edited, and a stale copy in a browser (or in the
+                # Annika app's webview) renders an old card against a new
+                # dashboard config. The `?v=` token below still lets clients
+                # cache within a single version.
+                False,
             )
             for filename, url_path in JS_RESOURCES
         ]
     )
-    for _, url_path in JS_RESOURCES:
-        add_extra_js_url(hass, f"{url_path}?v={integration.version}")
+    www_directory = integration_directory / "resources" / "www"
+    resource_urls = await hass.async_add_executor_job(
+        lambda: [
+            f"{url_path}?v={_resource_version(www_directory / filename, integration.version)}"
+            for filename, url_path in JS_RESOURCES
+        ]
+    )
+    for resource_url in resource_urls:
+        add_extra_js_url(hass, resource_url)
 
     async def async_install_resources(call: ServiceCall | None = None) -> None:
         """Install Annika resources in the Home Assistant config directory."""
