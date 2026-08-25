@@ -1,17 +1,60 @@
 // Annika lights card.
 //
-// Renders a map of area name -> list of entities (lights, fans, dimmers,
-// switches) as native HA tile cards, grouped under an area header. Tiles
-// are laid out in a responsive, wrapping row (auto-fill grid): a
-// fixed/consistent tile width, as many per row as fit the available width,
-// wrapping to the next line instead of a fixed column count. Every tile
-// gets exactly one feature so all tiles end up the same height — header
-// (icon + name + state) plus a single row of controls underneath, no
-// taller and no shorter regardless of how many buttons that feature has.
+// Renders lights, fans, dimmers and switches as native HA tile cards,
+// grouped under an area header. Tiles are laid out in a responsive,
+// wrapping row (auto-fill grid): a fixed/consistent tile width, as many per
+// row as fit the available width, wrapping to the next line instead of a
+// fixed column count. Every tile gets exactly one feature so all tiles end
+// up the same height — header (icon + name + state) plus a single row of
+// controls underneath, no taller and no shorter regardless of how many
+// buttons that feature has.
 //
-// Entities use the shared Annika shape (see annika-common.js): either a
-// bare entity id or `{ entity, name?, icon?, color? }`, mixable in the
-// same list.
+// By default the card takes no entity list at all: it reads Home
+// Assistant's own registries and shows every `light` and `switch` in the
+// house, grouped by their area and ordered by floor. A light added to HA
+// shows up here without touching the dashboard.
+//
+//   type: custom:annika-lights-card
+//
+// Auto mode only skips what HA already considers not user-facing (hidden,
+// disabled, and config/diagnostic entities). Everything else is a knob:
+//
+//   type: custom:annika-lights-card
+//   domains: [light, switch]     # what to pick up (default)
+//   color: primary               # tile color, applied to every tile (default)
+//   areas: [living_room, Kitchen]  # restrict *and* order; ids or names
+//   exclude:                     # entity ids, or whole areas
+//     - switch.kitchen_siren
+//     - garage
+//   include:                     # force in something that was filtered out
+//     - switch.garden_lights
+//   overrides:                   # per-entity, same keys as the shared shape
+//     light.living_room_dimmer:
+//       name: Dimmer
+//       icon: mdi:lamp
+//       color: amber
+//   unassigned: Other            # heading for entities with no area, or false
+//   tile_min_width: 160          # px
+//   grid_options:        # optional, sections view only; card width within
+//     columns: 6         # the section's 12-unit grid (12/full = whole row,
+//                        # 6 = half, 4 = a third). Defaults to full.
+//
+// Since `switch` covers a lot more than lights, `exclude` is what keeps
+// sirens, relays and the like out.
+//
+// Passing `areas` as a *map* instead of a list turns auto discovery off and
+// pins the card to exactly what is listed, in that order — the original
+// behaviour. Entities use the shared Annika shape (see annika-common.js):
+// either a bare entity id or `{ entity, name?, icon?, color?, toggle? }`.
+//
+//   type: custom:annika-lights-card
+//   areas:
+//     Living Room:
+//       - light.living_room_main
+//       - entity: light.living_room_dimmer
+//         name: Dimmer
+//     Kitchen:
+//       - switch.kitchen_lights
 //
 // The feature shown on each tile is derived from the entity's own
 // domain/capabilities:
@@ -20,25 +63,13 @@
 //   - fan reporting a speed percentage -> fan-speed feature
 //   - fan without speed support        -> toggle feature
 //   - anything else (switch, etc.)     -> toggle feature
-//
-// Usage in a dashboard view:
-//   type: custom:annika-lights-card
-//   tile_min_width: 160  # optional, px
-//   grid_options:        # optional, sections view only; card width within
-//     columns: 6         # the section's 12-unit grid (12/full = whole row,
-//                        # 6 = half, 4 = a third). Defaults to full.
-//   areas:
-//     Living Room:
-//       - light.living_room_main
-//       - entity: light.living_room_dimmer
-//         name: Dimmer
-//         icon: mdi:lamp
-//       - fan.living_room_ceiling
-//     Kitchen:
-//       - switch.kitchen_lights
 ;(() => {
   const CARD = 'annika-lights-card'
   const DEFAULT_TILE_MIN_WIDTH = 160
+  const DEFAULT_DOMAINS = ['light', 'switch']
+  // Lights and switches are the same kind of thing on a dashboard, so they
+  // read better as one uniform surface than as a mix of per-state colors.
+  const DEFAULT_COLOR = 'primary'
 
   function annika() {
     if (!window.Annika) throw new Error(`${CARD}: annika-common.js is not loaded`)
@@ -69,22 +100,49 @@
 
   class AnnikaLightsCard extends HTMLElement {
     setConfig(config) {
-      if (!config.areas || typeof config.areas !== 'object' || Array.isArray(config.areas)) {
-        throw new Error(`${CARD}: "areas" must be a map of area name to a list of entities`)
+      const isManual = config.areas && typeof config.areas === 'object' && !Array.isArray(config.areas)
+      if (config.areas !== undefined && !isManual && !Array.isArray(config.areas)) {
+        throw new Error(`${CARD}: "areas" must be a list of area ids/names, or a map of area name to entities`)
       }
+
       this._config = config
-      this._areas = Object.fromEntries(
-        Object.entries(config.areas).map(([area, items]) => [
-          area,
-          annika().normalizeItems(items, CARD, `areas.${area}`),
-        ]),
-      )
-      this._built = false
+      this._manualAreas = isManual
+        ? Object.entries(config.areas).map(([area, items]) => ({
+            name: area,
+            items: annika().normalizeItems(items, CARD, `areas.${area}`),
+          }))
+        : undefined
+      this._reset()
       this._render()
     }
 
+    _reset() {
+      this._built = false
+      this._tiles = undefined
+      this._groups = undefined
+    }
+
     set hass(hass) {
+      const previous = this._hass
       this._hass = hass
+
+      // Auto mode is a snapshot of the registries, so it has to be rebuilt
+      // when they change — that is what makes a newly added light appear.
+      // Registry objects keep their identity between state updates, so this
+      // costs one reference check per update, not a rescan.
+      if (!this._manualAreas && previous && this._built) {
+        const changed =
+          previous.entities !== hass.entities ||
+          previous.devices !== hass.devices ||
+          previous.areas !== hass.areas ||
+          previous.floors !== hass.floors
+        if (changed) {
+          this._reset()
+          this._render()
+          return
+        }
+      }
+
       if (this._tiles) {
         for (const tile of this._tiles) tile.hass = hass
       } else {
@@ -93,9 +151,11 @@
     }
 
     getCardSize() {
-      const areas = Object.values(this._areas || {})
-      const totalEntities = areas.reduce((sum, list) => sum + list.length, 0)
-      return Math.ceil(totalEntities / 4) * 2 + areas.length
+      const groups = this._groups || this._manualAreas
+      // Asked before the first render, auto mode has nothing to measure yet.
+      if (!groups) return 6
+      const total = groups.reduce((sum, group) => sum + group.items.length, 0)
+      return Math.ceil(total / 4) * 2 + groups.length
     }
 
     getGridOptions() {
@@ -110,6 +170,20 @@
       }
     }
 
+    _discover() {
+      if (this._manualAreas) return this._manualAreas
+
+      const { entitiesByArea } = annika()
+      return entitiesByArea(this._hass, CARD, {
+        domains: this._config.domains || DEFAULT_DOMAINS,
+        areas: this._config.areas,
+        include: this._config.include,
+        exclude: this._config.exclude,
+        overrides: this._config.overrides,
+        unassigned: this._config.unassigned,
+      })
+    }
+
     async _render() {
       if (!this._hass || !this._config || this._built) return
       this._built = true
@@ -117,6 +191,9 @@
       const { tileConfig, createHeader } = annika()
       const helpers = await window.loadCardHelpers()
       const minWidth = this._config.tile_min_width || DEFAULT_TILE_MIN_WIDTH
+      const color = this._config.color === undefined ? DEFAULT_COLOR : this._config.color
+
+      this._groups = this._discover()
 
       this.innerHTML = `
         <style>
@@ -132,15 +209,17 @@
       `
       this._tiles = []
 
-      for (const [area, items] of Object.entries(this._areas)) {
-        this.appendChild(createHeader(area))
+      for (const group of this._groups) {
+        this.appendChild(createHeader(group.name))
 
         const row = document.createElement('div')
         row.className = 'annika-tile-row'
 
-        for (const item of items) {
+        for (const item of group.items) {
           const tile = await helpers.createCardElement(
-            tileConfig(item, { features: featuresFor(this._hass, item.entity) }),
+            // The card-level color is a default: an item's own `color`, from
+            // `overrides` or from a manual list, still wins.
+            tileConfig({ color, ...item }, { features: featuresFor(this._hass, item.entity) }),
           )
           tile.hass = this._hass
           this._tiles.push(tile)
@@ -158,6 +237,7 @@
   window.customCards.push({
     type: 'annika-lights-card',
     name: 'Annika Lights',
-    description: 'Lists lights/fans/switches grouped by area as native tile cards with area-appropriate features.',
+    description:
+      'Every light and switch in the house, discovered from the registries and grouped by area, as native tile cards.',
   })
 })()

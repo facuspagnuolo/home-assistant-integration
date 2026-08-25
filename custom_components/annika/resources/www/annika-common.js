@@ -134,6 +134,147 @@
     return header
   }
 
+  // --- area discovery -----------------------------------------------------
+  //
+  // The frontend carries the registries on `hass`, so a card can build itself
+  // from what the house actually has instead of a hand-kept entity list:
+  //   hass.entities  entity_id  -> { device_id, area_id, entity_category, hidden_by, ... }
+  //   hass.devices   device_id  -> { area_id, ... }
+  //   hass.areas     area_id    -> { name, icon, floor_id }
+  //   hass.floors    floor_id   -> { name, level }
+
+  const UNASSIGNED_KEY = '__unassigned__'
+
+  // For matching a config value against an area: "Living Room", "living room"
+  // and "living_room" all address the same area.
+  function slug(value) {
+    return String(value).trim().toLowerCase().replace(/[^a-z0-9]+/g, '_')
+  }
+
+  // An entity's area is its own if it has one, otherwise its device's.
+  function entityArea(hass, entity) {
+    const entry = hass?.entities?.[entity]
+    if (!entry) return undefined
+    return entry.area_id || hass?.devices?.[entry.device_id]?.area_id || undefined
+  }
+
+  // Entities the user is not meant to see on a dashboard: hidden, disabled, or
+  // the config/diagnostic entities every integration ships. Anything missing
+  // from the registry (YAML helpers, templates without a unique_id) has
+  // nothing marking it either way, so it is kept.
+  function isUserFacing(hass, entity) {
+    const entry = hass?.entities?.[entity]
+    if (!entry) return true
+    return !entry.hidden_by && !entry.disabled_by && !entry.entity_category
+  }
+
+  function areaLabel(hass, areaId) {
+    return hass?.areas?.[areaId]?.name || areaId
+  }
+
+  // Areas come out of the registry unordered; sort them the way they read in
+  // the house — by floor, then by name.
+  function areaOrder(hass, areaId) {
+    const area = hass?.areas?.[areaId]
+    const floor = area?.floor_id ? hass?.floors?.[area.floor_id] : undefined
+    return [floor?.level ?? 0, floor?.name || '', area?.name || areaId]
+  }
+
+  function compareTuples(a, b) {
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i] === b[i]) continue
+      return a[i] < b[i] ? -1 : 1
+    }
+    return 0
+  }
+
+  // Group every entity of the given domains by area.
+  //
+  //   domains    domains to pick up, e.g. ['light', 'switch']
+  //   areas      optional list of area ids/names — restricts *and* orders
+  //   include    entity ids to add even if they would be filtered out
+  //   exclude    entity ids to drop, or area ids/names to drop whole
+  //   overrides  { entity_id: { name?, icon?, color? } }
+  //   unassigned heading for entities with no area, or false to drop them
+  //
+  // Returns [{ areaId, name, items: [normalized item] }] — same item shape
+  // every Annika card takes, so the result drops straight into tileConfig.
+  function entitiesByArea(hass, cardName, options = {}) {
+    const {
+      domains,
+      areas,
+      include = [],
+      exclude = [],
+      overrides = {},
+      unassigned = 'Unassigned',
+    } = options
+
+    if (!Array.isArray(domains) || domains.length === 0) {
+      throw new Error(`${cardName}: "domains" must be a non-empty list`)
+    }
+
+    const wantedDomains = new Set(domains)
+    const forced = new Set(include.map((item) => entityId(item, cardName)))
+
+    const excludedEntities = new Set()
+    const excludedAreas = new Set()
+    for (const value of exclude) {
+      const id = typeof value === 'string' ? value : entityId(value, cardName)
+      if (id.includes('.')) excludedEntities.add(id)
+      else excludedAreas.add(slug(id))
+    }
+
+    // An explicit `areas` list both restricts and fixes the order.
+    const requested = Array.isArray(areas) ? areas.map(slug) : undefined
+    const areaKey = (hass_, areaId) =>
+      areaId ? [slug(areaId), slug(areaLabel(hass_, areaId))] : [UNASSIGNED_KEY]
+
+    const groups = new Map()
+    for (const entity of Object.keys(hass?.states || {})) {
+      const isForced = forced.has(entity)
+      if (!isForced && !wantedDomains.has(entity.split('.')[0])) continue
+      if (excludedEntities.has(entity)) continue
+      if (!isForced && !isUserFacing(hass, entity)) continue
+
+      const areaId = entityArea(hass, entity)
+      const keys = areaKey(hass, areaId)
+      if (keys.some((key) => excludedAreas.has(key))) continue
+      if (requested && !keys.some((key) => requested.includes(key))) continue
+      if (!areaId && unassigned === false) continue
+
+      const key = areaId || UNASSIGNED_KEY
+      if (!groups.has(key)) {
+        groups.set(key, {
+          areaId,
+          name: areaId ? areaLabel(hass, areaId) : String(unassigned),
+          items: [],
+        })
+      }
+      groups.get(key).items.push(normalizeItem({ entity, ...(overrides[entity] || {}) }, cardName))
+    }
+
+    const result = [...groups.values()]
+    result.sort((a, b) => {
+      // Entities with no area always land last, whatever the ordering.
+      if (!a.areaId || !b.areaId) return !a.areaId ? 1 : -1
+      if (requested) {
+        const rank = (group) =>
+          Math.min(...areaKey(hass, group.areaId).map((key) => {
+            const index = requested.indexOf(key)
+            return index === -1 ? Number.MAX_SAFE_INTEGER : index
+          }))
+        return rank(a) - rank(b)
+      }
+      return compareTuples(areaOrder(hass, a.areaId), areaOrder(hass, b.areaId))
+    })
+
+    for (const group of result) {
+      group.items.sort((a, b) => displayName(hass, a).localeCompare(displayName(hass, b)))
+    }
+
+    return result.filter((group) => group.items.length > 0)
+  }
+
   window.Annika = {
     entityId,
     normalizeItem,
@@ -143,5 +284,8 @@
     gridConfig,
     displayName,
     createHeader,
+    entityArea,
+    isUserFacing,
+    entitiesByArea,
   }
 })()
