@@ -61,7 +61,10 @@ Annika:
       # ones. Controls inside a card (brightness bars, cover buttons,
       # switches) keep their own radius on purpose.
       ha-card-border-radius: "0px"
-      ha-card-border-width: "1px"
+      # No border either: embedded-view-card flattens the cards it renders,
+      # so a border here showed up on native views and not on embedded ones.
+      # Cards are told apart by their surface color instead.
+      ha-card-border-width: "0px"
       ha-card-border-color: "rgba(255,255,255,0.09)"
       divider-color: "rgba(255,255,255,0.08)"
       outline-color: "rgba(255,255,255,0.12)"
