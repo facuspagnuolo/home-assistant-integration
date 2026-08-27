@@ -14,6 +14,7 @@
 //   type: custom:annika-automations-card
 //   title: Automations   # optional header above everything
 //   columns: 2           # optional, tiles per row (default 2)
+//   heading_style: subtitle  # group headings: subtitle (default) or title
 //   color: primary       # optional, tile color for every tile (default);
 //                        # use `state` for Home Assistant's state coloring
 //   grid_options:        # optional, sections view only; card width within
@@ -44,6 +45,8 @@
   // Same reasoning as the lights and covers cards: one uniform surface reads
   // better than a mix of per-state colors.
   const DEFAULT_COLOR = 'primary'
+  // Group headings on a stock dashboard are subtitles, not titles.
+  const DEFAULT_HEADING_STYLE = 'subtitle'
 
   function annika() {
     if (!window.Annika) throw new Error(`${CARD}: annika-common.js is not loaded`)
@@ -77,8 +80,8 @@
 
     set hass(hass) {
       this._hass = hass
-      if (this._grids) {
-        for (const grid of this._grids) grid.hass = hass
+      if (this._cards) {
+        for (const card of this._cards) card.hass = hass
       } else {
         this._render()
       }
@@ -108,35 +111,49 @@
       if (!this._hass || !this._config || this._built) return
       this._built = true
 
-      const { tileConfig, gridConfig, createHeader } = annika()
+      const { tileConfig, gridConfig, headingConfig } = annika()
       const helpers = await window.loadCardHelpers()
       const columns = this._config.columns || DEFAULT_COLUMNS
       const color = this._config.color === undefined ? DEFAULT_COLOR : this._config.color
+      const headingStyle = this._config.heading_style || DEFAULT_HEADING_STYLE
 
-      this.innerHTML = ''
-      if (this._config.title) {
-        this.appendChild(createHeader(this._config.title, '0 0 8px 4px'))
+      this.innerHTML = `
+        <style>
+          .annika-heading {
+            display: block;
+          }
+          .annika-heading:not(:first-child) {
+            margin-top: var(--ha-section-row-gap, 8px);
+          }
+        </style>
+      `
+      this._cards = []
+
+      const build = async (config) => {
+        const element = await helpers.createCardElement(config)
+        element.hass = this._hass
+        this._cards.push(element)
+        return element
       }
 
-      this._grids = []
-      for (const [index, group] of this._groups.entries()) {
-        if (group.name) {
-          // No top margin on the first heading when it is the first thing in
-          // the card, so grouped and ungrouped cards start at the same place.
-          const first = index === 0 && !this._config.title
-          this.appendChild(createHeader(group.name, first ? '0 0 8px 4px' : '16px 0 8px 4px'))
-        }
+      const appendHeading = async (text, style) => {
+        const heading = await build(headingConfig(text, { style }))
+        heading.classList.add('annika-heading')
+        this.appendChild(heading)
+      }
 
-        const grid = await helpers.createCardElement(
+      if (this._config.title) await appendHeading(this._config.title, 'title')
+
+      for (const group of this._groups) {
+        if (group.name) await appendHeading(group.name, headingStyle)
+
+        // The card-level color is a default: an entity's own `color` still wins.
+        const grid = await build(
           gridConfig(
-            // The card-level color is a default: an entity's own `color`
-            // still wins.
             group.items.map((item) => tileConfig({ color, ...item }, { features: [{ type: 'toggle' }] })),
             columns,
           ),
         )
-        grid.hass = this._hass
-        this._grids.push(grid)
         this.appendChild(grid)
       }
     }

@@ -111,8 +111,16 @@
     }
   }
 
-  function headingConfig(text) {
-    return { type: 'heading', heading: text, heading_style: 'title' }
+  // Home Assistant's own heading card, not a hand-rolled <div>: it carries
+  // the typography, spacing and icon treatment a hand-built dashboard gets,
+  // so an Annika card sitting next to a stock one reads the same.
+  //   style  'title' (large, primary text) | 'subtitle' (small, secondary) —
+  //          area/group headings on a stock dashboard are subtitles
+  //   icon   optional, e.g. the area's own icon from the registry
+  function headingConfig(text, { style = 'title', icon } = {}) {
+    const config = { type: 'heading', heading: text, heading_style: style }
+    if (icon) config.icon = icon
+    return config
   }
 
   function gridConfig(cards, columns = 2) {
@@ -247,6 +255,8 @@
         groups.set(key, {
           areaId,
           name: areaId ? areaLabel(hass, areaId) : String(unassigned),
+          // The area's own icon, so headings match what HA shows elsewhere.
+          icon: areaId ? hass?.areas?.[areaId]?.icon : undefined,
           items: [],
         })
       }

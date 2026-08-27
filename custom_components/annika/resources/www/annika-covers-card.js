@@ -35,6 +35,7 @@
 //       color: amber
 //   unassigned: Other            # heading for entities with no area, or false
 //   tile_min_width: 160          # px
+//   heading_style: subtitle      # area headings: subtitle (default) or title
 //   grid_options:        # optional, sections view only; card width within
 //     columns: 6         # the section's 12-unit grid (12/full = whole row,
 //                        # 6 = half, 4 = a third). Defaults to full.
@@ -75,6 +76,8 @@
   // Same reasoning as the lights card: one uniform surface reads better than
   // a mix of per-state colors.
   const DEFAULT_COLOR = 'primary'
+  // Area headings on a stock dashboard are subtitles, not titles.
+  const DEFAULT_HEADING_STYLE = 'subtitle'
 
   function annika() {
     if (!window.Annika) throw new Error(`${CARD}: annika-common.js is not loaded`)
@@ -115,7 +118,7 @@
 
     _reset() {
       this._built = false
-      this._tiles = undefined
+      this._cards = undefined
       this._groups = undefined
     }
 
@@ -140,8 +143,8 @@
         }
       }
 
-      if (this._tiles) {
-        for (const tile of this._tiles) tile.hass = hass
+      if (this._cards) {
+        for (const card of this._cards) card.hass = hass
       } else {
         this._render()
       }
@@ -185,10 +188,11 @@
       if (!this._hass || !this._config || this._built) return
       this._built = true
 
-      const { tileConfig, createHeader } = annika()
+      const { tileConfig, headingConfig } = annika()
       const helpers = await window.loadCardHelpers()
       const minWidth = this._config.tile_min_width || DEFAULT_TILE_MIN_WIDTH
       const color = this._config.color === undefined ? DEFAULT_COLOR : this._config.color
+      const headingStyle = this._config.heading_style || DEFAULT_HEADING_STYLE
 
       this._groups = this._discover()
 
@@ -197,29 +201,45 @@
           .annika-tile-row {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(${minWidth}px, 1fr));
-            gap: 8px;
+            /* The same spacing tokens a sections view uses between its own
+               cards, so the rhythm matches a hand-built dashboard. */
+            column-gap: var(--ha-section-column-gap, 8px);
+            row-gap: var(--ha-section-row-gap, 8px);
           }
           .annika-tile-row > * {
             min-width: 0;
           }
+          .annika-heading {
+            display: block;
+          }
+          .annika-heading:not(:first-child) {
+            margin-top: var(--ha-section-row-gap, 8px);
+          }
         </style>
       `
-      this._tiles = []
+      this._cards = []
+
+      const build = async (config) => {
+        const element = await helpers.createCardElement(config)
+        element.hass = this._hass
+        this._cards.push(element)
+        return element
+      }
 
       for (const group of this._groups) {
-        this.appendChild(createHeader(group.name))
+        const heading = await build(headingConfig(group.name, { style: headingStyle, icon: group.icon }))
+        heading.classList.add('annika-heading')
+        this.appendChild(heading)
 
         const row = document.createElement('div')
         row.className = 'annika-tile-row'
 
         for (const item of group.items) {
-          const tile = await helpers.createCardElement(
-            // The card-level color is a default: an item's own `color`, from
-            // `overrides` or from a manual list, still wins.
+          // The card-level color is a default: an item's own `color`, from
+          // `overrides` or from a manual list, still wins.
+          const tile = await build(
             tileConfig({ color, ...item }, { features: featuresFor(this._hass, item.entity) }),
           )
-          tile.hass = this._hass
-          this._tiles.push(tile)
           row.appendChild(tile)
         }
 

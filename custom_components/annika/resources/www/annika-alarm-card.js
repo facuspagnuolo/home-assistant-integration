@@ -127,37 +127,28 @@
       }
       sensorCards.push(headingConfig('Sirens'), tileGrid(this._sirens))
 
-      const logbookCards = []
-      if (this._automations.length > 0) {
-        logbookCards.push(tileGrid(this._automations, { features: [{ type: 'toggle' }] }))
+      const alarmConfig = {
+        type: 'vertical-stack',
+        cards: [
+          {
+            type: 'alarm-panel',
+            entity: this._alarm.entity,
+            name: this._alarm.name,
+            states: this._alarm.states,
+          },
+        ],
       }
-      logbookCards.push({
+
+      const logbookConfig = {
         type: 'logbook',
         entities: [this._alarm.entity],
         hours_to_show: logbookHours,
-      })
+      }
 
-      const columnConfigs = [
-        {
-          type: 'vertical-stack',
-          cards: [
-            {
-              type: 'alarm-panel',
-              entity: this._alarm.entity,
-              name: this._alarm.name,
-              states: this._alarm.states,
-            },
-          ],
-        },
-        {
-          type: 'vertical-stack',
-          cards: logbookCards,
-        },
-        {
-          type: 'vertical-stack',
-          cards: sensorCards,
-        },
-      ]
+      const sensorsConfig = {
+        type: 'vertical-stack',
+        cards: sensorCards,
+      }
 
       const activityConfig = {
         type: 'vertical-stack',
@@ -173,15 +164,31 @@
         ],
       }
 
+      this._cards = []
       const build = (cfg) => {
         const element = helpers.createCardElement(cfg)
         element.hass = this._hass
+        this._cards.push(element)
         return element
       }
 
-      const columns = columnConfigs.map(build)
+      // The middle column is assembled here rather than handed to a
+      // vertical-stack so the logbook can be wrapped in an element of ours.
+      // The logbook grows without bound otherwise, and capping it by styling
+      // Home Assistant's own `hui-logbook-card` tag would break silently the
+      // day that element is renamed.
+      const logbookColumn = document.createElement('div')
+      logbookColumn.className = 'annika-alarm-column'
+      if (this._automations.length > 0) {
+        logbookColumn.appendChild(build(tileGrid(this._automations, { features: [{ type: 'toggle' }] })))
+      }
+      const logbook = document.createElement('div')
+      logbook.className = 'annika-logbook'
+      logbook.appendChild(build(logbookConfig))
+      logbookColumn.appendChild(logbook)
+
+      const columns = [build(alarmConfig), logbookColumn, build(sensorsConfig)]
       const activity = build(activityConfig)
-      this._cards = [...columns, activity]
 
       this.innerHTML = `
         <style>
@@ -194,9 +201,18 @@
           .annika-alarm-grid > * {
             min-width: 0;
           }
-          .annika-alarm-grid hui-logbook-card {
-            display: block;
+          .annika-alarm-column {
+            display: flex;
+            flex-direction: column;
+            gap: var(--ha-section-row-gap, 8px);
+          }
+          .annika-logbook {
             height: ${logbookHeight}px;
+          }
+          /* Whatever card lands inside, no tag names involved. */
+          .annika-logbook > * {
+            display: block;
+            height: 100%;
           }
           .annika-alarm-activity {
             margin-top: 16px;
