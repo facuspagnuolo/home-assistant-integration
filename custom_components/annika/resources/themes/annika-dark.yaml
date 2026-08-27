@@ -55,7 +55,12 @@ Annika:
       sidebar-icon-color: "rgba(232,232,230,0.55)"
 
       # Cards / borders
-      ha-card-border-radius: "18px"
+      # Square corners: the Annika app embeds dashboards through
+      # embedded-view-card, which flattens the cards it renders. Rounding
+      # here made embedded views read as a different surface than native
+      # ones. Controls inside a card (brightness bars, cover buttons,
+      # switches) keep their own radius on purpose.
+      ha-card-border-radius: "0px"
       ha-card-border-width: "1px"
       ha-card-border-color: "rgba(255,255,255,0.09)"
       divider-color: "rgba(255,255,255,0.08)"
