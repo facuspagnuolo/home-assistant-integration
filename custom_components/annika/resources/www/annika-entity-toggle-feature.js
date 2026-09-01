@@ -1,22 +1,36 @@
 // Annika "entity toggle" tile feature.
 //
 // A native tile feature can only act on the tile's own entity, so there is
-// no built-in way to show a switch for a *different* entity underneath a
+// no built-in way to show a control for a *different* entity underneath a
 // tile. This custom feature does exactly that: the tile keeps showing its
-// own entity (e.g. a motion or door sensor and its state), and the feature
-// row underneath toggles some other on/off entity — typically an
-// `input_boolean` helper that an automation checks to decide whether it
-// should listen to that sensor when arming the alarm.
+// own entity (e.g. a motion or door sensor and its state), and the row
+// underneath toggles some other on/off entity — typically the participation
+// switch Annika creates for that sensor, deciding whether it takes part in
+// the alarm.
 //
-// It renders the same `ha-control-switch` the native toggle feature uses,
-// with the same power icon, so it is visually indistinguishable from the
-// toggle on an automation tile.
+// Three looks:
 //
-// The one difference is the "on" color. The native feature paints itself
-// with the tile's own state color, which for a sensor sitting at "Clear"
-// is the inactive grey — a switch that stays grey while it is on. So this
-// feature uses the theme's active color by default and takes an explicit
-// `color` instead.
+//   inline    (default) a small square pulled up into the tile's own row, so
+//             the tile stays one row tall. A feature normally gets a row of
+//             its own, which makes every sensor tile twice as tall for a
+//             checkbox. This collapses that row to nothing and positions the
+//             box over it. It is the one place here that leans on the tile's
+//             geometry rather than on config, so if a Home Assistant release
+//             ever moves things around, fall back to `checkbox`.
+//   inline-switch  the very same `ha-control-switch` the native toggle
+//             feature renders, but in the tile's own row. Same control, one
+//             row instead of two — the native feature always takes a row of
+//             its own and that is not configurable.
+//   checkbox  the same square, on its own row. Taller, but nothing about the
+//             tile's internals is assumed.
+//   switch    the same `ha-control-switch` the native toggle feature uses,
+//             for when the toggle *is* the point of the tile.
+//
+// The "on" color is deliberately not the tile's state color: the native
+// feature paints itself with it, and for a sensor sitting at "Clear" that is
+// the inactive grey — a control that stays grey while it is on. This one
+// defaults to `primary`, the same default every Annika card uses for its
+// tiles, and takes an explicit `color`.
 //
 // It works with anything `homeassistant.toggle` accepts: input_boolean,
 // switch, automation, light, ...
@@ -26,27 +40,24 @@
 //   entity: binary_sensor.hall_motion
 //   features:
 //     - type: custom:annika-entity-toggle-feature
-//       entity: input_boolean.hall_motion_armed
-//       color: green      # optional, HA color name or any CSS color
+//       entity: switch.hall_motion_sensor_alarm_enabled
+//       style: inline     # optional, the default
+//       color: primary    # optional, HA color name or any CSS color
 //
-// In the Annika cards this is wired through the shared `toggle` key, so you
-// never write the feature by hand:
-//   motion_sensors:
-//     - entity: binary_sensor.hall_motion
-//       name: Hall Sensor
-//       toggle: input_boolean.hall_motion_armed
-//     - entity: binary_sensor.patio_motion
-//       toggle:
-//         entity: input_boolean.patio_motion_armed
-//         color: green
+// In the Annika alarm card this is wired through the shared `toggle` key, or
+// found automatically from the Annika switch that names this sensor as its
+// source — see annika-alarm-card.js.
 ;(() => {
   const FEATURE = 'annika-entity-toggle-feature'
+  const STYLES = ['inline', 'inline-switch', 'checkbox', 'switch']
 
   // mdi:power — the icon the native toggle feature puts on the switch knob.
   const MDI_POWER =
     'M16.56,5.44L15.11,6.89C16.84,7.94 18,9.83 18,12A6,6 0 0,1 12,18A6,6 0 0,1 6,12C6,9.83 ' +
     '7.16,7.94 8.88,6.88L7.44,5.44C5.36,6.88 4,9.28 4,12A8,8 0 0,0 12,20A8,8 0 0,0 20,12C20,' +
     '9.28 18.64,6.88 16.56,5.44M13,3H11V13H13'
+  // mdi:check
+  const MDI_CHECK = 'M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z'
 
   // Color names the HA themes define as `--<name>-color`.
   const THEME_COLORS = new Set([
@@ -56,11 +67,13 @@
     'light-grey', 'grey', 'dark-grey', 'blue-grey', 'black', 'white',
   ])
 
+  function icon(path) {
+    return `<svg viewBox="0 0 24 24"><path d="${path}"></path></svg>`
+  }
+
   // "green" -> "var(--green-color)"; "#ff0000" / "rgb(...)" pass through.
-  // Unset falls back to the theme's active color (what an "on" tile uses),
-  // never to the tile's current color, which is grey while the sensor is idle.
   function cssColor(color) {
-    if (!color) return 'var(--state-active-color, var(--primary-color))'
+    if (!color) return 'var(--primary-color)'
     const name = String(color).trim().replace(/_/g, '-')
     return THEME_COLORS.has(name) ? `var(--${name}-color)` : String(color)
   }
@@ -78,9 +91,14 @@
 
     setConfig(config) {
       if (!config || typeof config.entity !== 'string') {
-        throw new Error(`${FEATURE}: "entity" is required (the entity the switch controls)`)
+        throw new Error(`${FEATURE}: "entity" is required (the entity the control toggles)`)
+      }
+      const style = config.style || 'inline'
+      if (!STYLES.includes(style)) {
+        throw new Error(`${FEATURE}: "style" must be one of ${STYLES.join(', ')}`)
       }
       this._config = config
+      this._style = style
       this._onColor = cssColor(config.color)
       this._build()
       this._update()
@@ -114,14 +132,79 @@
     }
 
     _build() {
-      if (this._switch) return
+      if (this._control) return
 
       this.innerHTML = `
         <style>
           .annika-toggle-feature {
-            display: block;
+            display: flex;
+            align-items: center;
             width: 100%;
+            /* Same row height as any other feature, so tiles with and without
+               one still line up. Only the control inside is smaller. */
             height: var(--feature-height, 42px);
+          }
+          .annika-toggle-feature.checkbox {
+            justify-content: flex-end;
+          }
+          /* The row collapses to nothing and the box is placed over the tile's
+             own row, which sits directly above it. */
+          .annika-toggle-feature.inline {
+            height: 0;
+            position: relative;
+            justify-content: flex-end;
+            overflow: visible;
+          }
+          .annika-toggle-feature.inline-switch {
+            height: 0;
+            position: relative;
+            justify-content: flex-end;
+            overflow: visible;
+          }
+          .annika-toggle-feature.inline-switch ha-control-switch,
+          .annika-toggle-feature.inline-switch .annika-toggle-fallback {
+            position: absolute;
+            right: 0;
+            bottom: 4px;
+            width: 45%;
+            height: 34px;
+          }
+          .annika-toggle-feature.inline .annika-toggle-checkbox {
+            position: absolute;
+            right: 0;
+            /* Measured against the tile's row, which ends just above this
+               collapsed one — enough to sit level with the icon and the name
+               rather than hanging off the bottom. */
+            bottom: 9px;
+          }
+          .annika-toggle-checkbox {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 22px;
+            height: 22px;
+            padding: 0;
+            border: 2px solid var(--disabled-color);
+            border-radius: 6px;
+            background: transparent;
+            color: transparent;
+            cursor: pointer;
+            transition: background 150ms ease-in-out, border-color 150ms ease-in-out,
+              color 150ms ease-in-out;
+          }
+          .annika-toggle-checkbox[aria-checked='true'] {
+            background: ${this._onColor};
+            border-color: ${this._onColor};
+            color: var(--white-color, #fff);
+          }
+          .annika-toggle-checkbox[disabled] {
+            cursor: default;
+            opacity: 0.4;
+          }
+          .annika-toggle-checkbox svg {
+            width: 15px;
+            height: 15px;
+            fill: currentColor;
           }
           .annika-toggle-feature ha-control-switch {
             height: 100%;
@@ -175,33 +258,65 @@
       `
 
       const wrapper = document.createElement('div')
-      wrapper.className = 'annika-toggle-feature'
+      wrapper.className = `annika-toggle-feature ${this._style}`
 
-      if (customElements.get('ha-control-switch')) {
-        this._switch = this._createNativeSwitch()
+      if (this._style === 'checkbox' || this._style === 'inline') {
+        // Drawn here rather than borrowed from Home Assistant: nothing native
+        // is this small, and it keeps the default look free of any dependency
+        // on HA's internal elements.
+        this._control = this._createCheckbox()
+      } else if (customElements.get('ha-control-switch')) {
+        this._control = this._createNativeSwitch()
       } else {
-        this._switch = this._createFallbackSwitch()
+        this._control = this._createFallbackSwitch()
         // The native element is lazily loaded by HA; swap it in if it shows up.
         customElements.whenDefined('ha-control-switch').then(() => {
-          if (!this._switch || this._isNative()) return
+          if (!this._control || this._isNative()) return
           const native = this._createNativeSwitch()
-          this._switch.replaceWith(native)
-          this._switch = native
+          this._control.replaceWith(native)
+          this._control = native
           this._update()
         })
       }
 
-      wrapper.appendChild(this._switch)
+      wrapper.appendChild(this._control)
       this.appendChild(wrapper)
     }
 
     _isNative() {
-      return this._switch?.tagName?.toLowerCase() === 'ha-control-switch'
+      return this._control?.tagName?.toLowerCase() === 'ha-control-switch'
+    }
+
+    _button(className, iconPath) {
+      const element = document.createElement('button')
+      element.type = 'button'
+      element.className = className
+      element.setAttribute('role', 'switch')
+      element.setAttribute('aria-label', this._config.entity)
+      if (iconPath) element.innerHTML = icon(iconPath)
+      element.addEventListener('click', (event) => {
+        event.stopPropagation()
+        this._toggle()
+      })
+      return element
+    }
+
+    _createCheckbox() {
+      return this._button('annika-toggle-checkbox', MDI_CHECK)
+    }
+
+    _createFallbackSwitch() {
+      // The fallback's icon lives on the sliding knob, not on the button.
+      const element = this._button('annika-toggle-fallback')
+      const knob = document.createElement('div')
+      knob.className = 'knob'
+      knob.innerHTML = icon(MDI_POWER)
+      element.appendChild(knob)
+      return element
     }
 
     _createNativeSwitch() {
       const element = document.createElement('ha-control-switch')
-      // Same knob icon the native toggle feature uses.
       element.pathOn = MDI_POWER
       element.pathOff = MDI_POWER
       element.setAttribute('aria-label', this._config.entity)
@@ -212,41 +327,23 @@
       return element
     }
 
-    _createFallbackSwitch() {
-      const element = document.createElement('button')
-      element.type = 'button'
-      element.className = 'annika-toggle-fallback'
-      element.setAttribute('role', 'switch')
-      element.setAttribute('aria-label', this._config.entity)
-
-      const knob = document.createElement('div')
-      knob.className = 'knob'
-      knob.innerHTML = `<svg viewBox="0 0 24 24"><path d="${MDI_POWER}"></path></svg>`
-      element.appendChild(knob)
-
-      element.addEventListener('click', (event) => {
-        event.stopPropagation()
-        this._toggle()
-      })
-      return element
-    }
-
     _update() {
-      if (!this._switch || !this._config) return
+      if (!this._control || !this._config) return
 
       const stateObj = this._state()
       const isOn = stateObj?.state === 'on'
       const unavailable = !stateObj || stateObj.state === 'unavailable' || stateObj.state === 'unknown'
 
       if (this._isNative()) {
-        this._switch.checked = isOn
-        this._switch.disabled = unavailable
-      } else {
-        this._switch.setAttribute('aria-checked', String(isOn))
-        this._switch.disabled = unavailable
-        if (unavailable) this._switch.setAttribute('disabled', '')
-        else this._switch.removeAttribute('disabled')
+        this._control.checked = isOn
+        this._control.disabled = unavailable
+        return
       }
+
+      this._control.setAttribute('aria-checked', String(isOn))
+      this._control.disabled = unavailable
+      if (unavailable) this._control.setAttribute('disabled', '')
+      else this._control.removeAttribute('disabled')
     }
 
     _toggle() {

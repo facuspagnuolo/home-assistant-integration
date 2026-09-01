@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import shutil
 from pathlib import Path
 
@@ -11,15 +12,29 @@ import voluptuous as vol
 from homeassistant.components import persistent_notification
 from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.components.http import StaticPathConfig
-from homeassistant.const import EVENT_HOMEASSISTANT_STOP
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, EVENT_HOMEASSISTANT_STOP
+from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.discovery import async_load_platform
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
 
-from .const import CONF_API_URL, CONF_UNIT_ID, CONF_WEBHOOK_SECRET, DOMAIN
+from .alarm import DATA_ALARM, AnnikaAlarmSensors
+from .const import (
+    CONF_ALARM_SENSORS,
+    CONF_API_URL,
+    CONF_DEVICES,
+    CONF_ENTITIES,
+    CONF_EXCLUDE,
+    CONF_UNIT_ID,
+    CONF_WEBHOOK_SECRET,
+    DOMAIN,
+)
 from .heartbeat import HeartbeatReporter
 from .send_event import async_send_event
+
+_LOGGER = logging.getLogger(__name__)
 
 SERVICE_INSTALL_RESOURCES = "install_resources"
 SERVICE_SEND_EVENT = "send_event"
@@ -45,6 +60,36 @@ CONFIG_SCHEMA = vol.Schema(
                 vol.Required(CONF_API_URL): cv.url,
                 vol.Required(CONF_UNIT_ID): cv.string,
                 vol.Required(CONF_WEBHOOK_SECRET): cv.string,
+                # Physical sensors Annika wraps with an alarm participation
+                # switch. Devices can be named or given by registry id; every
+                # binary_sensor they own is picked up. See alarm.py.
+                vol.Optional(CONF_ALARM_SENSORS): vol.Schema(
+                    {
+                        vol.Optional(CONF_DEVICES, default=[]): vol.All(
+                            cv.ensure_list, [cv.string]
+                        ),
+                        # A bare entity id, or { entity, name } — the same
+                        # shape the Annika cards take. Listing an entity a
+                        # device already brought in is how to rename it.
+                        vol.Optional(CONF_ENTITIES, default=[]): vol.All(
+                            cv.ensure_list,
+                            [
+                                vol.Any(
+                                    cv.entity_id,
+                                    vol.Schema(
+                                        {
+                                            vol.Required("entity"): cv.entity_id,
+                                            vol.Optional("name"): cv.string,
+                                        }
+                                    ),
+                                )
+                            ],
+                        ),
+                        vol.Optional(CONF_EXCLUDE, default=[]): vol.All(
+                            cv.ensure_list, [cv.entity_id]
+                        ),
+                    }
+                ),
             }
         )
     },
@@ -87,6 +132,49 @@ def _resource_version(path: Path, version: str) -> str:
         return version
 
     return f"{version}.{digest}"
+
+
+
+async def async_setup_alarm_sensors(hass: HomeAssistant, config: ConfigType) -> None:
+    """Wire up the alarm participation layer, if this unit configures one.
+
+    Resolution waits for Home Assistant to finish starting: the panels live in
+    another integration, and at this point their entities may not be in the
+    registry yet. After that it keeps listening, so a panel added later — or a
+    zone enabled on an existing one — shows up without a restart.
+    """
+
+    alarm_config = config.get(CONF_ALARM_SENSORS)
+    if not alarm_config:
+        return
+
+    sensors = AnnikaAlarmSensors(hass, alarm_config)
+    hass.data[DATA_ALARM] = sensors
+
+    async def async_start_alarm_sensors(_event=None) -> None:
+        sensors.async_refresh()
+        if not sensors.sensors:
+            _LOGGER.warning(
+                "Annika alarm: no source sensors matched the configuration; "
+                "nothing to wrap"
+            )
+        for platform in ("binary_sensor", "switch"):
+            hass.async_create_task(
+                async_load_platform(hass, platform, DOMAIN, {}, config)
+            )
+
+        @callback
+        def registry_updated(_event) -> None:
+            sensors.async_refresh()
+
+        hass.bus.async_listen(er.EVENT_ENTITY_REGISTRY_UPDATED, registry_updated)
+
+    if hass.is_running:
+        await async_start_alarm_sensors()
+    else:
+        hass.bus.async_listen_once(
+            EVENT_HOMEASSISTANT_STARTED, async_start_alarm_sensors
+        )
 
 
 async def async_setup(
@@ -181,6 +269,8 @@ async def async_setup(
         async_handle_send_event,
         schema=SEND_EVENT_SCHEMA,
     )
+
+    await async_setup_alarm_sensors(hass, config[DOMAIN])
 
     heartbeat_reporter = HeartbeatReporter(hass)
     await heartbeat_reporter.async_start()

@@ -62,7 +62,7 @@
         normalized.toggle = {
           entity: entityId(toggle, cardName),
           // A toggle without its own color follows the tile's color, and
-          // falls back to the theme's active color inside the feature.
+          // falls back to `primary` inside the feature.
           color: (typeof toggle === 'object' ? toggle.color : undefined) ?? normalized.color,
         }
       }
@@ -381,6 +381,217 @@
     return nonEmpty
   }
 
+  // --- grouped tile card ---------------------------------------------------
+  //
+  // The layout every Annika list card shares: native heading cards, and under
+  // each one a wrapping row of native tile cards — a consistent tile width,
+  // as many per row as fit, dropping to the next line instead of squeezing.
+  // Entities come from `discoverEntities` unless the config pins them.
+  //
+  //   card      element name, for error messages
+  //   domains   default domains to discover
+  //   groupBy   default grouping axis
+  //   features  (hass, entity) -> tile features for that entity
+  //   color     default tile color
+  //
+  // Returns a class ready for customElements.define.
+  function groupedTileCard({ card: CARD, domains, groupBy = 'area', features, color: defaultColor = 'primary' }) {
+    const DEFAULT_TILE_MIN_WIDTH = 160
+    const DEFAULT_HEADING_STYLE = 'subtitle'
+
+    return class extends HTMLElement {
+      setConfig(config) {
+        // `groups` is the shared key; a map pins the card to exactly what is
+        // listed, a list restricts and orders what discovery finds.
+        if (config.groups !== undefined && typeof config.groups !== 'object') {
+          throw new Error(`${CARD}: "groups" must be a list of group ids/names, or a map of heading to entities`)
+        }
+
+        this._config = config
+        if (Array.isArray(config.entities)) {
+          if (config.entities.length === 0) {
+            throw new Error(`${CARD}: "entities" must be a non-empty list of entities`)
+          }
+          // A single unnamed group renders as a plain list, no heading.
+          this._manualGroups = [{ name: undefined, items: normalizeItems(config.entities, CARD) }]
+        } else if (config.groups && !Array.isArray(config.groups)) {
+          this._manualGroups = Object.entries(config.groups).map(([group, items]) => ({
+            name: group,
+            items: normalizeItems(items, CARD, `groups.${group}`),
+          }))
+        } else {
+          this._manualGroups = undefined
+        }
+
+        this._reset()
+        this._render()
+      }
+
+      _reset() {
+        this._built = false
+        this._cards = undefined
+        this._groups = undefined
+      }
+
+      set hass(hass) {
+        const previous = this._hass
+        this._hass = hass
+
+        // Auto mode is a snapshot of the registries, so it has to be rebuilt
+        // when they change — that is what makes a newly added entity appear.
+        // Registry objects keep their identity between state updates, so this
+        // costs one reference check per update, not a rescan.
+        if (!this._manualGroups && previous && this._built) {
+          const changed =
+            previous.entities !== hass.entities ||
+            previous.devices !== hass.devices ||
+            previous.areas !== hass.areas ||
+            previous.floors !== hass.floors
+          if (changed) {
+            this._reset()
+            this._render()
+            return
+          }
+        }
+
+        if (this._cards) {
+          for (const element of this._cards) element.hass = hass
+        } else {
+          this._render()
+        }
+      }
+
+      getCardSize() {
+        const groups = this._groups || this._manualGroups
+        // Asked before the first render, auto mode has nothing to measure yet.
+        if (!groups) return 6
+        const total = groups.reduce((sum, group) => sum + group.items.length, 0)
+        return Math.ceil(total / 4) * 2 + groups.length
+      }
+
+      getGridOptions() {
+        return { columns: 'full' }
+      }
+
+      getLayoutOptions() {
+        return { grid_columns: 'full' }
+      }
+
+      _discover() {
+        if (this._manualGroups) return Promise.resolve(this._manualGroups)
+
+        return discoverEntities(this._hass, CARD, {
+          domains: this._config.domains || domains,
+          groupBy: this._config.group_by || groupBy,
+          groups: Array.isArray(this._config.groups) ? this._config.groups : undefined,
+          include: this._config.include,
+          exclude: this._config.exclude,
+          overrides: this._config.overrides,
+          ungrouped: this._config.ungrouped,
+          categoryScope: this._config.category_scope,
+        })
+      }
+
+      async _render() {
+        if (!this._hass || !this._config || this._built) return
+        this._built = true
+
+        const helpers = await window.loadCardHelpers()
+        const minWidth = this._config.tile_min_width || DEFAULT_TILE_MIN_WIDTH
+        const color = this._config.color === undefined ? defaultColor : this._config.color
+        const headingStyle = this._config.heading_style || DEFAULT_HEADING_STYLE
+
+        this._groups = await this._discover()
+
+        this.innerHTML = `
+          <style>
+            .annika-tile-row {
+              display: grid;
+              grid-template-columns: repeat(auto-fill, minmax(${minWidth}px, 1fr));
+              column-gap: var(--ha-section-column-gap, 8px);
+              row-gap: var(--ha-section-row-gap, 8px);
+            }
+            .annika-tile-row > * {
+              min-width: 0;
+            }
+            .annika-heading {
+              display: block;
+            }
+            .annika-heading:not(:first-child) {
+              margin-top: var(--ha-section-row-gap, 8px);
+            }
+          </style>
+        `
+        this._cards = []
+
+        const build = async (config) => {
+          const element = await helpers.createCardElement(config)
+          element.hass = this._hass
+          this._cards.push(element)
+          return element
+        }
+
+        const appendHeading = async (text, style, icon) => {
+          const heading = await build(headingConfig(text, { style, icon }))
+          heading.classList.add('annika-heading')
+          this.appendChild(heading)
+        }
+
+        if (this._config.title) await appendHeading(this._config.title, 'title')
+
+        for (const group of this._groups) {
+          if (group.name) await appendHeading(group.name, headingStyle, group.icon)
+
+          const row = document.createElement('div')
+          row.className = 'annika-tile-row'
+
+          for (const item of group.items) {
+            // The card-level color is a default: an item's own `color` wins.
+            row.appendChild(
+              await build(tileConfig({ color, ...item }, { features: features(this._hass, item.entity) })),
+            )
+          }
+
+          this.appendChild(row)
+        }
+      }
+    }
+  }
+
+  // homeassistant.components.climate.const.ClimateEntityFeature
+  const CLIMATE_TARGET_TEMPERATURE = 1
+  const CLIMATE_TARGET_TEMPERATURE_RANGE = 2
+  const CLIMATE_FAN_MODE = 8
+  const CLIMATE_SWING_MODE = 32
+  const CLIMATE_SWING_HORIZONTAL_MODE = 512
+
+  // Only the features the entity actually supports — not every AC has fan
+  // modes, swing, or horizontal swing, so each one is gated on the entity's
+  // own supported_features bitmask / mode lists instead of being hardcoded.
+  function climateFeatures(hass, entity) {
+    const stateObj = hass?.states?.[entity]
+    const supported = stateObj?.attributes?.supported_features || 0
+    const features = []
+
+    if (supported & CLIMATE_TARGET_TEMPERATURE || supported & CLIMATE_TARGET_TEMPERATURE_RANGE) {
+      features.push({ type: 'target-temperature' })
+    }
+    if ((stateObj?.attributes?.hvac_modes || []).length > 1) {
+      features.push({ type: 'climate-hvac-modes' })
+    }
+    if (supported & CLIMATE_FAN_MODE) {
+      features.push({ style: 'icons', type: 'climate-fan-modes' })
+    }
+    if (supported & CLIMATE_SWING_MODE) {
+      features.push({ style: 'icons', type: 'climate-swing-modes' })
+    }
+    if (supported & CLIMATE_SWING_HORIZONTAL_MODE) {
+      features.push({ style: 'icons', type: 'climate-swing-horizontal-modes' })
+    }
+
+    return features
+  }
+
   window.Annika = {
     entityId,
     normalizeItem,
@@ -393,5 +604,7 @@
     entityArea,
     isUserFacing,
     discoverEntities,
+    groupedTileCard,
+    climateFeatures,
   }
 })()

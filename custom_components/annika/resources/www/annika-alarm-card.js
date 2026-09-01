@@ -22,6 +22,11 @@
 // alarm. Use `toggle: { entity, color }` to give the switch its own color.
 // See annika-entity-toggle-feature.js.
 //
+// When the Annika integration is configured with `alarm_sensors`, it creates
+// that switch for every sensor itself and the card finds it on its own — no
+// `toggle` in the dashboard YAML, no input_boolean helpers to keep. Writing
+// `toggle` by hand still overrides whatever was found.
+//
 // Usage in a dashboard view:
 //   type: custom:annika-alarm-card
 //   grid_options:        # optional, sections view only; card width within
@@ -30,6 +35,13 @@
 //   logbook_hours: 96    # optional, hours of logbook to show (default 96)
 //   history_hours: 72    # optional, hours of timeline to show (default 72)
 //   logbook_height: 420  # optional, px height of the logbook (default 420)
+//   color: primary       # optional, tile color for every tile (default);
+//                        # use `state` for Home Assistant's state coloring
+//   headings:            # optional, section titles (English by default)
+//     activity: Actividad   # over the logbook
+//     history: Historial    # over the timeline
+//     motion: Movimiento
+//     doors: Puertas
 //   alarm:
 //     entity: alarm_control_panel.home_alarm
 //     name: Alarm
@@ -57,6 +69,18 @@
   const DEFAULT_LOGBOOK_HOURS = 96
   const DEFAULT_HISTORY_HOURS = 72
   const DEFAULT_LOGBOOK_HEIGHT = 420
+  // Same default as every other Annika card: one uniform surface instead of a
+  // mix of per-state colors. `color: state` gives HA's state coloring back.
+  const DEFAULT_COLOR = 'primary'
+
+  // English by default so a unit that says nothing keeps reading the same;
+  // override per unit with `headings:` — see the usage block above.
+  const DEFAULT_HEADINGS = {
+    activity: 'Activity',   // over the logbook
+    history: 'History',     // over the timeline
+    motion: 'Sensors',
+    doors: 'Doors',
+  }
 
   function annika() {
     if (!window.Annika) throw new Error(`${CARD}: annika-common.js is not loaded`)
@@ -80,7 +104,19 @@
     }
 
     set hass(hass) {
+      const previous = this._hass
       this._hass = hass
+
+      // The participation switches are created by the Annika integration
+      // after Home Assistant finishes starting, which can land after this
+      // card first rendered. A registry change is the cheap signal that new
+      // entities exist, so the card picks them up without a page reload.
+      if (previous && this._cards && previous.entities !== hass.entities) {
+        this._cards = undefined
+        this._render()
+        return
+      }
+
       if (this._cards) {
         for (const card of this._cards) card.hass = hass
       } else {
@@ -106,6 +142,17 @@
       }
     }
 
+    // switch entity id, indexed by the sensor it belongs to. Built once per
+    // render rather than scanned per sensor.
+    _participationToggles() {
+      const index = new Map()
+      for (const state of Object.values(this._hass?.states || {})) {
+        const source = state.attributes?.source_entity_id
+        if (source && state.entity_id.startsWith('switch.')) index.set(source, state.entity_id)
+      }
+      return index
+    }
+
     async _render() {
       if (!this._hass || !this._config || this._cards) return
 
@@ -117,15 +164,30 @@
         logbook_height: logbookHeight = DEFAULT_LOGBOOK_HEIGHT,
       } = this._config
 
-      // Tiles are laid out two per row so they take half the column width
-      // instead of stretching across the whole column.
-      const tileGrid = (items, options) => gridConfig(items.map((item) => tileConfig(item, options)), 2)
+      const headings = { ...DEFAULT_HEADINGS, ...(this._config.headings || {}) }
 
-      const sensorCards = [headingConfig('Sensors'), tileGrid(this._motionSensors)]
-      if (this._doorSensors.length > 0) {
-        sensorCards.push(headingConfig('Doors'), tileGrid(this._doorSensors))
+      const color = this._config.color === undefined ? DEFAULT_COLOR : this._config.color
+
+      // Tiles are laid out two per row so they take half the column width
+      // instead of stretching across the whole column. The card-level color is
+      // a default: an item's own `color` still wins.
+      const tileGrid = (items, options) =>
+        gridConfig(items.map((item) => tileConfig({ color, ...item }, options)), 2)
+
+      // The Annika integration creates one participation switch per alarm
+      // sensor and tags it with the sensor it belongs to, so a sensor that
+      // has one gets its toggle without naming it in the dashboard YAML.
+      // An explicit `toggle` in the config still wins.
+      const toggles = this._participationToggles()
+      const withToggle = (item) => {
+        if (item.toggle || !toggles.has(item.entity)) return item
+        return { ...item, toggle: { entity: toggles.get(item.entity), color: item.color } }
       }
-      sensorCards.push(headingConfig('Sirens'), tileGrid(this._sirens))
+
+      const sensorCards = [headingConfig(headings.motion), tileGrid(this._motionSensors.map(withToggle))]
+      if (this._doorSensors.length > 0) {
+        sensorCards.push(headingConfig(headings.doors), tileGrid(this._doorSensors.map(withToggle)))
+      }
 
       const alarmConfig = {
         type: 'vertical-stack',
@@ -153,10 +215,11 @@
       const activityConfig = {
         type: 'vertical-stack',
         cards: [
-          headingConfig('Activity'),
+          headingConfig(headings.history),
           {
             type: 'history-graph',
-            title: 'Timeline',
+            // No title of its own: the heading above already names the
+            // section, and the card's title would repeat it inside the box.
             refresh_interval: 60,
             hours_to_show: historyHours,
             entities: [{ entity: this._alarm.entity, name: this._alarm.name }],
@@ -182,10 +245,42 @@
       if (this._automations.length > 0) {
         logbookColumn.appendChild(build(tileGrid(this._automations, { features: [{ type: 'toggle' }] })))
       }
+      logbookColumn.appendChild(build(headingConfig(headings.activity)))
+
       const logbook = document.createElement('div')
       logbook.className = 'annika-logbook'
       logbook.appendChild(build(logbookConfig))
       logbookColumn.appendChild(logbook)
+
+      // Sirens sit under the logbook rather than at the end of the sensor
+      // column: there are one or two of them, and the sensor column is long.
+      if (this._sirens.length > 0) {
+        // The same `ha-control-switch` Home Assistant's native toggle feature
+        // renders, but in the tile's own row: the native one always takes a
+        // row of its own, and this tile reads better as one. Full width and no
+        // heading, so it sits as the last row of the activity column.
+        logbookColumn.appendChild(
+          build(
+            gridConfig(
+              this._sirens.map((item) =>
+                tileConfig(
+                  { color, ...item },
+                  {
+                    features: [
+                      {
+                        type: 'custom:annika-entity-toggle-feature',
+                        entity: item.toggle?.entity || item.entity,
+                        style: 'inline-switch',
+                      },
+                    ],
+                  },
+                ),
+              ),
+              1,
+            ),
+          ),
+        )
+      }
 
       const columns = [build(alarmConfig), logbookColumn, build(sensorsConfig)]
       const activity = build(activityConfig)
