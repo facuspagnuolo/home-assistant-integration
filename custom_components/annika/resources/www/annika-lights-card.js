@@ -21,9 +21,10 @@
 //
 //   type: custom:annika-lights-card
 //   domains: [light, switch]     # what to pick up (default)
+//   group_by: area               # area (default), category, label or none
 //   color: primary               # tile color, applied to every tile (default)
-//   areas: [living_room, Kitchen]  # restrict *and* order; ids or names
-//   exclude:                     # entity ids, or whole areas
+//   groups: [living_room, Kitchen] # restrict *and* order; ids or names
+//   exclude:                     # entity ids, or whole groups
 //     - switch.kitchen_siren
 //     - garage
 //   include:                     # force in something that was filtered out
@@ -33,7 +34,7 @@
 //       name: Dimmer
 //       icon: mdi:lamp
 //       color: amber
-//   unassigned: Other            # heading for entities with no area, or false
+//   ungrouped: Other             # heading for the rest, or false to drop them
 //   tile_min_width: 160          # px
 //   heading_style: subtitle      # area headings: subtitle (default) or title
 //   grid_options:        # optional, sections view only; card width within
@@ -43,13 +44,16 @@
 // Since `switch` covers a lot more than lights, `exclude` is what keeps
 // sirens, relays and the like out.
 //
-// Passing `areas` as a *map* instead of a list turns auto discovery off and
+// `groups` is the key every Annika card shares; here `areas` is the older
+// name for it and still works, as does `unassigned` for `ungrouped`.
+//
+// Passing `groups` as a *map* instead of a list turns auto discovery off and
 // pins the card to exactly what is listed, in that order — the original
 // behaviour. Entities use the shared Annika shape (see annika-common.js):
 // either a bare entity id or `{ entity, name?, icon?, color?, toggle? }`.
 //
 //   type: custom:annika-lights-card
-//   areas:
+//   groups:
 //     Living Room:
 //       - light.living_room_main
 //       - entity: light.living_room_dimmer
@@ -73,6 +77,7 @@
   const DEFAULT_COLOR = 'primary'
   // Area headings on a stock dashboard are subtitles, not titles.
   const DEFAULT_HEADING_STYLE = 'subtitle'
+  const DEFAULT_GROUP_BY = 'area'
 
   function annika() {
     if (!window.Annika) throw new Error(`${CARD}: annika-common.js is not loaded`)
@@ -103,16 +108,20 @@
 
   class AnnikaLightsCard extends HTMLElement {
     setConfig(config) {
-      const isManual = config.areas && typeof config.areas === 'object' && !Array.isArray(config.areas)
-      if (config.areas !== undefined && !isManual && !Array.isArray(config.areas)) {
-        throw new Error(`${CARD}: "areas" must be a list of area ids/names, or a map of area name to entities`)
+      // `groups` is the shared key across every Annika card; `areas` is the
+      // older name for it here and still works.
+      const key = config.groups !== undefined ? 'groups' : 'areas'
+      const given = config.groups !== undefined ? config.groups : config.areas
+      const isManual = given && typeof given === 'object' && !Array.isArray(given)
+      if (given !== undefined && !isManual && !Array.isArray(given)) {
+        throw new Error(`${CARD}: "${key}" must be a list of group ids/names, or a map of heading to entities`)
       }
 
       this._config = config
-      this._manualAreas = isManual
-        ? Object.entries(config.areas).map(([area, items]) => ({
-            name: area,
-            items: annika().normalizeItems(items, CARD, `areas.${area}`),
+      this._manualGroups = isManual
+        ? Object.entries(given).map(([group, items]) => ({
+            name: group,
+            items: annika().normalizeItems(items, CARD, `${key}.${group}`),
           }))
         : undefined
       this._reset()
@@ -133,7 +142,7 @@
       // when they change — that is what makes a newly added light appear.
       // Registry objects keep their identity between state updates, so this
       // costs one reference check per update, not a rescan.
-      if (!this._manualAreas && previous && this._built) {
+      if (!this._manualGroups && previous && this._built) {
         const changed =
           previous.entities !== hass.entities ||
           previous.devices !== hass.devices ||
@@ -154,7 +163,7 @@
     }
 
     getCardSize() {
-      const groups = this._groups || this._manualAreas
+      const groups = this._groups || this._manualGroups
       // Asked before the first render, auto mode has nothing to measure yet.
       if (!groups) return 6
       const total = groups.reduce((sum, group) => sum + group.items.length, 0)
@@ -173,17 +182,20 @@
       }
     }
 
-    _discover() {
-      if (this._manualAreas) return this._manualAreas
+    async _discover() {
+      if (this._manualGroups) return this._manualGroups
 
-      const { entitiesByArea } = annika()
-      return entitiesByArea(this._hass, CARD, {
+      const { discoverEntities } = annika()
+      return discoverEntities(this._hass, CARD, {
         domains: this._config.domains || DEFAULT_DOMAINS,
-        areas: this._config.areas,
+        groupBy: this._config.group_by || DEFAULT_GROUP_BY,
+        // `areas` is the older name for this key and still works.
+        groups: this._config.groups || this._config.areas,
         include: this._config.include,
         exclude: this._config.exclude,
         overrides: this._config.overrides,
-        unassigned: this._config.unassigned,
+        ungrouped: this._config.ungrouped ?? this._config.unassigned,
+        categoryScope: this._config.category_scope,
       })
     }
 
@@ -197,7 +209,7 @@
       const color = this._config.color === undefined ? DEFAULT_COLOR : this._config.color
       const headingStyle = this._config.heading_style || DEFAULT_HEADING_STYLE
 
-      this._groups = this._discover()
+      this._groups = await this._discover()
 
       this.innerHTML = `
         <style>

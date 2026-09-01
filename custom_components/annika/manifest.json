@@ -1,7 +1,7 @@
 {
   "domain": "annika",
   "name": "Annika",
-  "version": "0.0.23",
+  "version": "0.0.24",
   "dependencies": ["frontend", "script"],
   "documentation": "https://github.com/facuspagnuolo/home-assistant-integration",
   "codeowners": ["@facuspagnuolo"],

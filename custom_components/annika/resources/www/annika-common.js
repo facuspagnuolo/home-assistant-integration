@@ -142,19 +142,27 @@
     return header
   }
 
-  // --- area discovery -----------------------------------------------------
+  // --- entity discovery ---------------------------------------------------
   //
-  // The frontend carries the registries on `hass`, so a card can build itself
-  // from what the house actually has instead of a hand-kept entity list:
-  //   hass.entities  entity_id  -> { device_id, area_id, entity_category, hidden_by, ... }
-  //   hass.devices   device_id  -> { area_id, ... }
-  //   hass.areas     area_id    -> { name, icon, floor_id }
-  //   hass.floors    floor_id   -> { name, level }
+  // The frontend carries Home Assistant's registries on `hass`, so a card can
+  // build itself from what the house actually has instead of a hand-kept
+  // entity list:
+  //   hass.entities  entity_id -> { device_id, area_id, categories, labels,
+  //                                 entity_category, hidden_by, disabled_by }
+  //   hass.devices   device_id -> { area_id }
+  //   hass.areas     area_id   -> { name, icon, floor_id }
+  //   hass.floors    floor_id  -> { name, level }
+  //
+  // Categories and labels are not on `hass` — they live in their own
+  // registries, read over the websocket and cached per connection. Older
+  // Home Assistant versions do not have those commands; a card that asks for
+  // them there simply ends up with everything ungrouped instead of failing.
 
-  const UNASSIGNED_KEY = '__unassigned__'
+  const UNGROUPED_KEY = '__ungrouped__'
+  const GROUP_MODES = ['area', 'category', 'label', 'none']
 
-  // For matching a config value against an area: "Living Room", "living room"
-  // and "living_room" all address the same area.
+  // For matching a config value against a group: "Living Room", "living room"
+  // and "living_room" all address the same one.
   function slug(value) {
     return String(value).trim().toLowerCase().replace(/[^a-z0-9]+/g, '_')
   }
@@ -196,93 +204,181 @@
     return 0
   }
 
-  // Group every entity of the given domains by area.
+  // One in-flight request per connection and registry, so ten cards on a
+  // dashboard cost one websocket round trip, not ten.
+  const registryCache = new WeakMap()
+
+  function fetchRegistry(hass, key, message) {
+    const connection = hass?.connection
+    if (!connection || typeof hass.callWS !== 'function') return Promise.resolve([])
+
+    let cache = registryCache.get(connection)
+    if (!cache) {
+      cache = new Map()
+      registryCache.set(connection, cache)
+    }
+    if (!cache.has(key)) {
+      // A Home Assistant without this command is not an error here: it just
+      // means the card cannot group by it, so it degrades to ungrouped.
+      cache.set(key, Promise.resolve(hass.callWS(message)).catch(() => []))
+    }
+    return cache.get(key)
+  }
+
+  // Group every entity of the given domains, by area, category or label.
   //
   //   domains    domains to pick up, e.g. ['light', 'switch']
-  //   areas      optional list of area ids/names — restricts *and* orders
+  //   groupBy    'area' (default) | 'category' | 'label' | 'none'
+  //   groups     optional list of group ids/names — restricts *and* orders
   //   include    entity ids to add even if they would be filtered out
-  //   exclude    entity ids to drop, or area ids/names to drop whole
-  //   overrides  { entity_id: { name?, icon?, color? } }
-  //   unassigned heading for entities with no area, or false to drop them
+  //   exclude    entity ids to drop, or group ids/names to drop whole
+  //   overrides  { entity_id: { name?, icon?, color?, toggle? } }
+  //   ungrouped  heading for entities in no group, or false to drop them
+  //   categoryScope  category registry scope (defaults to the first domain)
   //
-  // Returns [{ areaId, name, items: [normalized item] }] — same item shape
+  // Returns [{ key, name, icon, items: [normalized item] }] — same item shape
   // every Annika card takes, so the result drops straight into tileConfig.
-  function entitiesByArea(hass, cardName, options = {}) {
+  // When nothing turned out to be grouped, the single group comes back with
+  // no name, so the card renders a plain list instead of a lone "Other".
+  async function discoverEntities(hass, cardName, options = {}) {
     const {
       domains,
-      areas,
+      groupBy = 'area',
+      groups,
       include = [],
       exclude = [],
       overrides = {},
-      unassigned = 'Unassigned',
+      ungrouped = 'Other',
+      categoryScope,
     } = options
 
     if (!Array.isArray(domains) || domains.length === 0) {
       throw new Error(`${cardName}: "domains" must be a non-empty list`)
     }
+    let mode = String(groupBy)
+    if (!GROUP_MODES.includes(mode)) {
+      throw new Error(`${cardName}: "group_by" must be one of ${GROUP_MODES.join(', ')}`)
+    }
+
+    // Group id -> { name, icon }, for the modes that need a registry.
+    const scope = categoryScope || domains[0]
+    const index = new Map()
+    if (mode === 'category') {
+      const list = await fetchRegistry(hass, `category:${scope}`, {
+        type: 'config/category_registry/list',
+        scope,
+      })
+      for (const entry of list || []) index.set(entry.category_id, entry)
+    } else if (mode === 'label') {
+      const list = await fetchRegistry(hass, 'label', { type: 'config/label_registry/list' })
+      for (const entry of list || []) index.set(entry.label_id, entry)
+    }
+
+    // Without the registry there are no names for the ids the entities carry,
+    // and grouping by raw ids ("c_01f3...") is worse than not grouping. This
+    // is the older-Home-Assistant path, and also the nothing-is-tagged-yet one.
+    if (index.size === 0 && (mode === 'category' || mode === 'label')) mode = 'none'
+
+    const groupsOf = (entity) => {
+      if (mode === 'none') return []
+      if (mode === 'area') {
+        const areaId = entityArea(hass, entity)
+        return areaId ? [areaId] : []
+      }
+      const entry = hass?.entities?.[entity]
+      if (!entry) return []
+      if (mode === 'category') {
+        const categoryId = entry.categories?.[scope]
+        return categoryId ? [categoryId] : []
+      }
+      return entry.labels || []
+    }
+
+    const nameOf = (id) => (mode === 'area' ? areaLabel(hass, id) : index.get(id)?.name || id)
+    const iconOf = (id) => (mode === 'area' ? hass?.areas?.[id]?.icon : index.get(id)?.icon)
+    const keysOf = (id) => [slug(id), slug(nameOf(id))]
+    const orderOf = (id) => (mode === 'area' ? areaOrder(hass, id) : [0, '', nameOf(id)])
 
     const wantedDomains = new Set(domains)
     const forced = new Set(include.map((item) => entityId(item, cardName)))
 
     const excludedEntities = new Set()
-    const excludedAreas = new Set()
+    const excludedGroups = new Set()
     for (const value of exclude) {
       const id = typeof value === 'string' ? value : entityId(value, cardName)
       if (id.includes('.')) excludedEntities.add(id)
-      else excludedAreas.add(slug(id))
+      else excludedGroups.add(slug(id))
     }
 
-    // An explicit `areas` list both restricts and fixes the order.
-    const requested = Array.isArray(areas) ? areas.map(slug) : undefined
-    const areaKey = (hass_, areaId) =>
-      areaId ? [slug(areaId), slug(areaLabel(hass_, areaId))] : [UNASSIGNED_KEY]
+    // An explicit list both restricts and fixes the order.
+    const requested = Array.isArray(groups) ? groups.map(slug) : undefined
+    const rank = (id) => {
+      const positions = keysOf(id)
+        .map((key) => requested.indexOf(key))
+        .filter((position) => position !== -1)
+      return positions.length ? Math.min(...positions) : -1
+    }
 
-    const groups = new Map()
+    const buckets = new Map()
     for (const entity of Object.keys(hass?.states || {})) {
       const isForced = forced.has(entity)
       if (!isForced && !wantedDomains.has(entity.split('.')[0])) continue
       if (excludedEntities.has(entity)) continue
       if (!isForced && !isUserFacing(hass, entity)) continue
 
-      const areaId = entityArea(hass, entity)
-      const keys = areaKey(hass, areaId)
-      if (keys.some((key) => excludedAreas.has(key))) continue
-      if (requested && !keys.some((key) => requested.includes(key))) continue
-      if (!areaId && unassigned === false) continue
+      // Excluding a group hides what is in it: an entity in an excluded group
+      // disappears rather than falling through to the ungrouped bucket.
+      const candidates = groupsOf(entity)
+      if (candidates.some((id) => keysOf(id).some((k) => excludedGroups.has(k)))) continue
 
-      const key = areaId || UNASSIGNED_KEY
-      if (!groups.has(key)) {
-        groups.set(key, {
-          areaId,
-          name: areaId ? areaLabel(hass, areaId) : String(unassigned),
-          // The area's own icon, so headings match what HA shows elsewhere.
-          icon: areaId ? hass?.areas?.[areaId]?.icon : undefined,
+      // An entity can carry several labels; it still belongs to exactly one
+      // group here, so it never shows up twice. With an explicit list the
+      // earliest one listed wins, otherwise the first one it carries.
+      let groupId
+      if (requested) {
+        const ranked = candidates.map((id) => [rank(id), id]).filter(([r]) => r !== -1)
+        if (!ranked.length) continue
+        ranked.sort((a, b) => a[0] - b[0])
+        groupId = ranked[0][1]
+      } else {
+        groupId = candidates[0]
+      }
+
+      if (!groupId && ungrouped === false) continue
+
+      const key = groupId || UNGROUPED_KEY
+      if (!buckets.has(key)) {
+        buckets.set(key, {
+          key: groupId,
+          name: groupId ? nameOf(groupId) : String(ungrouped),
+          // The group's own icon, so headings match what HA shows elsewhere.
+          icon: groupId ? iconOf(groupId) : undefined,
           items: [],
         })
       }
-      groups.get(key).items.push(normalizeItem({ entity, ...(overrides[entity] || {}) }, cardName))
+      buckets.get(key).items.push(normalizeItem({ entity, ...(overrides[entity] || {}) }, cardName))
     }
 
-    const result = [...groups.values()]
+    const result = [...buckets.values()]
     result.sort((a, b) => {
-      // Entities with no area always land last, whatever the ordering.
-      if (!a.areaId || !b.areaId) return !a.areaId ? 1 : -1
-      if (requested) {
-        const rank = (group) =>
-          Math.min(...areaKey(hass, group.areaId).map((key) => {
-            const index = requested.indexOf(key)
-            return index === -1 ? Number.MAX_SAFE_INTEGER : index
-          }))
-        return rank(a) - rank(b)
-      }
-      return compareTuples(areaOrder(hass, a.areaId), areaOrder(hass, b.areaId))
+      // Ungrouped entities always land last, whatever the ordering.
+      if (!a.key || !b.key) return !a.key ? 1 : -1
+      if (requested) return rank(a.key) - rank(b.key)
+      return compareTuples(orderOf(a.key), orderOf(b.key))
     })
 
     for (const group of result) {
       group.items.sort((a, b) => displayName(hass, a).localeCompare(displayName(hass, b)))
     }
 
-    return result.filter((group) => group.items.length > 0)
+    const nonEmpty = result.filter((group) => group.items.length > 0)
+
+    // Nothing is actually grouped — no categories set, no areas assigned. A
+    // single heading reading "Other" over the whole card is noise, so drop it
+    // and let the card render a plain list.
+    if (nonEmpty.length === 1 && !nonEmpty[0].key) nonEmpty[0].name = undefined
+
+    return nonEmpty
   }
 
   window.Annika = {
@@ -296,6 +392,6 @@
     createHeader,
     entityArea,
     isUserFacing,
-    entitiesByArea,
+    discoverEntities,
   }
 })()
