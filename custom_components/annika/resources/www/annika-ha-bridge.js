@@ -172,6 +172,115 @@
   document.addEventListener('touchend', onPullEnd, { passive: true })
   document.addEventListener('touchcancel', onPullEnd, { passive: true })
 
+  // ---------------------------------------------------------------------
+  // Who is using the app.
+  //
+  // Every household member reaches this Home Assistant through the Annika
+  // app, and the app signs them all in with one shared HA user — so HA's own
+  // `context.user_id` says the same thing no matter who pressed the button.
+  // The parent app is the only place that knows the difference, so it sends
+  // the name down here, and this stamps it onto each service call as it goes
+  // out. See custom_components/annika/actor.py for the other half.
+  //
+  // Nothing about this is a permission check: the name is asserted, not
+  // proven, and HA records it as `actor_verified: false`. It exists so a
+  // notification can say who disarmed the alarma, and for nothing else.
+  // ---------------------------------------------------------------------
+
+  var actor = null
+
+  function readActor(value) {
+    if (!value || typeof value !== 'object') return null
+    var name = typeof value.name === 'string' ? value.name.trim() : ''
+    if (!name) return null
+    return { name: name.slice(0, 64), id: typeof value.id === 'string' ? value.id : null }
+  }
+
+  window.addEventListener('message', function (event) {
+    // The only origin allowed to say who is acting. Without this check any
+    // page that got itself embedded around this one could name anybody.
+    if (event.origin !== TARGET_ORIGIN) return
+    var data = event.data
+    if (!data || typeof data !== 'object' || data.source !== 'annika-app') return
+    if (data.type !== 'actor') return
+    // An explicit null is the app saying it no longer knows who is there
+    // (signed out, session expired) — honored, so actions stop being
+    // attributed rather than keeping the last name around.
+    actor = readActor(data.actor)
+  })
+
+  // Collects what the call is about, in whichever shape
+  // home-assistant-js-websocket put it in — `target.entity_id` since the
+  // services rewrite, `service_data.entity_id` before it, either a string or
+  // a list. HA matches the stamp to the call on these, so a miss here means
+  // the action simply arrives unattributed.
+  function callEntityIds(message) {
+    var found = []
+    var sources = [message.target, message.service_data]
+    for (var i = 0; i < sources.length; i++) {
+      var source = sources[i]
+      if (!source || typeof source !== 'object') continue
+      var value = source.entity_id
+      if (typeof value === 'string') found.push(value)
+      else if (Array.isArray(value)) {
+        for (var j = 0; j < value.length; j++) {
+          if (typeof value[j] === 'string') found.push(value[j])
+        }
+      }
+    }
+    return found.filter(function (id, index) {
+      return found.indexOf(id) === index
+    })
+  }
+
+  // Every service call the frontend makes — a tile, a more-info dialog, a
+  // dashboard button — goes out through `sendMessagePromise`, so wrapping it
+  // once catches all of them without this script needing to know a single
+  // thing about any particular card.
+  //
+  // The stamp is sent but deliberately NOT awaited. `annika/stamp_actor` is a
+  // synchronous websocket command, so Home Assistant has fully processed it
+  // before it reads the call that follows on the same socket — awaiting would
+  // buy no extra ordering and would put a full tunnel round trip in front of
+  // every button press.
+  function wrapConnection(connection) {
+    if (connection.__annikaActorWrapped) return
+    connection.__annikaActorWrapped = true
+
+    var original = connection.sendMessagePromise.bind(connection)
+
+    connection.sendMessagePromise = function (message) {
+      try {
+        if (
+          actor &&
+          message &&
+          message.type === 'call_service' &&
+          // Annika's own services are plumbing rather than something a person
+          // did, and stamping the stamp would be a loop.
+          message.domain !== 'annika'
+        ) {
+          original({
+            type: 'annika/stamp_actor',
+            name: actor.name,
+            id: actor.id,
+            domain: message.domain,
+            service: message.service,
+            entity_id: callEntityIds(message),
+          }).catch(function () {
+            // An older unit without this command answers with an error. The
+            // call itself still goes through below, just unattributed — the
+            // attribution is never allowed to be the reason something the
+            // user pressed does not happen.
+          })
+        }
+      } catch (err) {
+        // Same rule: fail open, always.
+      }
+
+      return original.apply(null, arguments)
+    }
+  }
+
   function attachConnectionListeners(connection) {
     if (connection.__annikaBridgeAttached) return
     connection.__annikaBridgeAttached = true
@@ -225,6 +334,7 @@
       if (hass.connection !== lastConnection) {
         lastConnection = hass.connection
         attachConnectionListeners(hass.connection)
+        wrapConnection(hass.connection)
       }
       // `hass` only exists once HA has authenticated *and* pulled its initial
       // state dump — this is the same moment the stock "Loading data" screen
@@ -232,6 +342,7 @@
       // HA ever swaps the connection object out from under us.
       post('ready')
       postPath()
+      if (!actor) post('actor-request')
       nudgeResizeOnce()
       setTimeout(tick, 2000)
       return

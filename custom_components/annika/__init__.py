@@ -20,6 +20,7 @@ from homeassistant.helpers.discovery import async_load_platform
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
 
+from .actor import async_setup_actor
 from .alarm import DATA_ALARM, AnnikaAlarmSensors
 from .const import (
     CONF_ALARM_SENSORS,
@@ -177,6 +178,18 @@ async def async_setup_alarm_sensors(hass: HomeAssistant, config: ConfigType) -> 
         )
 
 
+async def async_setup_actor_sensor(hass: HomeAssistant, config: ConfigType) -> None:
+    """Wire up actor attribution and the sensor that surfaces it.
+
+    Unconditional — unlike the alarm layer there is nothing to configure, and
+    a unit with no attributed actions simply keeps a sensor that never leaves
+    its restored value. See actor.py.
+    """
+
+    async_setup_actor(hass)
+    hass.async_create_task(async_load_platform(hass, "sensor", DOMAIN, {}, config))
+
+
 async def async_setup(
         hass: HomeAssistant,
         config: ConfigType,
@@ -271,6 +284,7 @@ async def async_setup(
     )
 
     await async_setup_alarm_sensors(hass, config[DOMAIN])
+    await async_setup_actor_sensor(hass, config)
 
     heartbeat_reporter = HeartbeatReporter(hass)
     await heartbeat_reporter.async_start()
