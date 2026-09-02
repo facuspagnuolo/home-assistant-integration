@@ -10,7 +10,7 @@
 // buttons that feature has.
 //
 // By default the card takes no entity list at all: it reads Home
-// Assistant's own registries and shows every `light` and `switch` in the
+// Assistant's own registries and shows every `light`, `switch` and `fan` in the
 // house, grouped by their area and ordered by floor. A light added to HA
 // shows up here without touching the dashboard.
 //
@@ -20,7 +20,7 @@
 // disabled, and config/diagnostic entities). Everything else is a knob:
 //
 //   type: custom:annika-lights-card
-//   domains: [light, switch]     # what to pick up (default)
+//   domains: [light, switch, fan] # what to pick up (default)
 //   group_by: area               # area (default), category, label or none
 //   color: primary               # tile color, applied to every tile (default)
 //   groups: [living_room, Kitchen] # restrict *and* order; ids or names
@@ -65,19 +65,28 @@
 // domain/capabilities:
 //   - light with a dimmable color mode -> light-brightness feature
 //   - light with only "onoff" support  -> toggle feature
-//   - fan reporting a speed percentage -> fan-speed feature
-//   - fan without speed support        -> toggle feature
+//   - fan supporting SET_SPEED         -> fan-speed feature
+//   - fan supporting PRESET_MODE       -> fan-preset-modes feature
+//   - fan with neither                 -> toggle feature
 //   - anything else (switch, etc.)     -> toggle feature
 ;(() => {
   const CARD = 'annika-lights-card'
   const DEFAULT_TILE_MIN_WIDTH = 160
-  const DEFAULT_DOMAINS = ['light', 'switch']
+  // `fan` belongs here: the card has always documented fans and has a whole
+  // feature branch for them, but discovery never picked any up because the
+  // domain was missing from this list — so a fan only appeared if a dashboard
+  // named it explicitly.
+  const DEFAULT_DOMAINS = ['light', 'switch', 'fan']
   // Lights and switches are the same kind of thing on a dashboard, so they
   // read better as one uniform surface than as a mix of per-state colors.
   const DEFAULT_COLOR = 'primary'
   // Area headings on a stock dashboard are subtitles, not titles.
   const DEFAULT_HEADING_STYLE = 'subtitle'
   const DEFAULT_GROUP_BY = 'area'
+
+  // homeassistant/components/fan/__init__.py — FanEntityFeature.
+  const FAN_SET_SPEED = 1
+  const FAN_PRESET_MODE = 8
 
   function annika() {
     if (!window.Annika) throw new Error(`${CARD}: annika-common.js is not loaded`)
@@ -97,8 +106,20 @@
     }
 
     if (domain === 'fan') {
-      if (stateObj?.attributes?.percentage != null) {
+      const supported = stateObj?.attributes?.supported_features || 0
+      // Read from `supported_features`, never from `percentage`. A fan that
+      // is off reports `percentage: null` in several integrations, so sniffing
+      // that attribute decided "this fan has no speeds" for every fan that
+      // happened to be off when the card first rendered — and since the card
+      // builds its tiles once, they kept a plain toggle for the rest of the
+      // session. What a fan supports does not change with its state.
+      if (supported & FAN_SET_SPEED) {
         return [{ type: 'fan-speed' }]
+      }
+      // Named speeds instead of a percentage — same row of buttons, driven by
+      // the fan's own preset list.
+      if (supported & FAN_PRESET_MODE) {
+        return [{ style: 'icons', type: 'fan-preset-modes' }]
       }
       return [{ type: 'toggle' }]
     }
@@ -203,7 +224,7 @@
       if (!this._hass || !this._config || this._built) return
       this._built = true
 
-      const { tileConfig, headingConfig } = annika()
+      const { tileConfig, HEADING_CSS, appendHeading } = annika()
       const helpers = await window.loadCardHelpers()
       const minWidth = this._config.tile_min_width || DEFAULT_TILE_MIN_WIDTH
       const color = this._config.color === undefined ? DEFAULT_COLOR : this._config.color
@@ -224,12 +245,7 @@
           .annika-tile-row > * {
             min-width: 0;
           }
-          .annika-heading {
-            display: block;
-          }
-          .annika-heading:not(:first-child) {
-            margin-top: var(--ha-section-row-gap, 8px);
-          }
+          ${HEADING_CSS}
         </style>
       `
       this._cards = []
@@ -242,9 +258,12 @@
       }
 
       for (const group of this._groups) {
-        const heading = await build(headingConfig(group.name, { style: headingStyle, icon: group.icon }))
-        heading.classList.add('annika-heading')
-        this.appendChild(heading)
+        this._cards.push(
+          await appendHeading(this, helpers, this._hass, group.name, {
+            style: headingStyle,
+            icon: group.icon,
+          }),
+        )
 
         const row = document.createElement('div')
         row.className = 'annika-tile-row'

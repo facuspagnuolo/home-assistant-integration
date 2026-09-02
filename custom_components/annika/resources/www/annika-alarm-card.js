@@ -5,8 +5,9 @@
 //     1. Alarm panel
 //     2. Alarm automations (optional, 2 per row) + logbook of the alarm entity
 //     3. Sensors (motion_sensors), optionally Door Sensors (door_sensors,
-//        only rendered when non-empty, placed between motion and sirens),
-//        then Sirens — all tiles laid out 2 per row
+//        only rendered when non-empty) — tiles laid out 2 per row. Sirens
+//        go under the logbook in column 2 by default, also 2 per row — see
+//        sirens_position
 //   Bottom row, full width:
 //     Activity: heading + history-graph of the alarm entity
 //
@@ -14,18 +15,29 @@
 // bare entity id or `{ entity, name?, icon?, color?, toggle? }`, mixable in
 // the same list.
 //
-// Motion and door sensors can optionally carry a `toggle` entity — an
-// `input_boolean` helper that gets its own switch under the sensor tile,
-// looking exactly like the toggle on an automation tile. The tile still
-// shows the sensor's state; the switch flips the helper, so an automation
-// can check it to decide whether that sensor participates in arming the
-// alarm. Use `toggle: { entity, color }` to give the switch its own color.
-// See annika-entity-toggle-feature.js.
+// Motion and door sensors can carry a `toggle` — a control on the tile for
+// some *other* entity, typically the helper an automation checks to decide
+// whether that sensor takes part in arming the alarm. The tile still shows
+// the sensor's own state. `toggle` takes `{ entity?, style?, color? }`; see
+// annika-common.js for the four styles and annika-entity-toggle-feature.js
+// for what they look like.
 //
 // When the Annika integration is configured with `alarm_sensors`, it creates
 // that switch for every sensor itself and the card finds it on its own — no
 // `toggle` in the dashboard YAML, no input_boolean helpers to keep. Writing
-// `toggle` by hand still overrides whatever was found.
+// `toggle` by hand still overrides whatever was found, and `toggle: false`
+// is how a sensor opts out of the checkbox entirely.
+//
+// Sirens sit under the logbook by default. `sirens_position: sensors` moves
+// them to the end of the sensor column instead, under Movimiento and Puertas,
+// where they get a heading of their own (`headings.sirens`).
+//
+// Sirens are plain tiles by default, two per row like the sensors. Give one
+// a `toggle` to make it switchable from the card; a toggle that names no
+// entity controls the siren itself, so `toggle: { style: switch }` is all it
+// needs — and that spelling gets Home Assistant's own toggle feature, the
+// same control a light tile has. `inline-switch` is the one style wide enough
+// to need a full row, so a siren using it gets one.
 //
 // Usage in a dashboard view:
 //   type: custom:annika-alarm-card
@@ -42,6 +54,10 @@
 //     history: Historial    # over the timeline
 //     motion: Movimiento
 //     doors: Puertas
+//     sirens: Sirenas       # only shown with sirens_position: sensors
+//   sirens_position: activity   # optional: activity (default, under the
+//                               # logbook) or sensors (end of the sensor
+//                               # column)
 //   alarm:
 //     entity: alarm_control_panel.home_alarm
 //     name: Alarm
@@ -54,15 +70,20 @@
 //     - entity: binary_sensor.main_bedroom_motion_sensor_motion_detection
 //       name: Main Bedroom Sensor
 //       toggle: input_boolean.main_bedroom_sensor_armed   # optional
+//     - entity: binary_sensor.hall_motion
+//       toggle: false        # no checkbox, even if Annika made a switch
 //   door_sensors:
 //     - binary_sensor.front_door
 //     - entity: binary_sensor.garage_door
 //       toggle:
 //         entity: input_boolean.garage_door_armed
-//         color: green
+//         style: checkbox    # optional: inline (default), inline-switch,
+//         color: green       #           checkbox, switch
 //   sirens:
 //     - entity: switch.kitchen_siren
-//       name: Kitchen Siren
+//       name: Kitchen Siren        # a plain tile, half a row
+//     - entity: switch.garage_siren
+//       toggle: { style: switch }  # HA's own toggle, like a light tile
 ;(() => {
   const CARD = 'annika-alarm-card'
 
@@ -80,11 +101,28 @@
     history: 'History',     // over the timeline
     motion: 'Sensors',
     doors: 'Doors',
+    sirens: 'Sirens',   // only shown when the sirens sit in the sensor column
   }
+
+  // Where the sirens go. Two sensible homes, and which one reads better
+  // depends on how long the sensor column already is on a given unit.
+  const SIREN_POSITIONS = ['activity', 'sensors']
+  const DEFAULT_SIREN_POSITION = 'activity'
 
   function annika() {
     if (!window.Annika) throw new Error(`${CARD}: annika-common.js is not loaded`)
     return window.Annika
+  }
+
+  // How many sirens fit on a row. Two, like the sensor tiles, unless one of
+  // them carries an `inline-switch` — that control sits *inside* the tile's
+  // row and takes nearly half of it, so at half width there is nothing left
+  // for the name. Every other style stays comfortable at two per row: the
+  // checkboxes are small, and `switch` gets a row of its own inside the tile
+  // either way. Derived rather than configured, so choosing the control is
+  // the only decision to make.
+  function sirenColumns(sirens) {
+    return sirens.some((item) => item.toggle && item.toggle.style === 'inline-switch') ? 1 : 2
   }
 
   class AnnikaAlarmCard extends HTMLElement {
@@ -100,6 +138,12 @@
       this._motionSensors = normalizeItems(config.motion_sensors, CARD, 'motion_sensors')
       this._doorSensors = normalizeItems(config.door_sensors || [], CARD, 'door_sensors')
       this._sirens = normalizeItems(config.sirens, CARD, 'sirens')
+
+      this._sirenPosition = config.sirens_position || DEFAULT_SIREN_POSITION
+      if (!SIREN_POSITIONS.includes(this._sirenPosition)) {
+        throw new Error(`${CARD}: "sirens_position" must be one of ${SIREN_POSITIONS.join(', ')}`)
+      }
+
       this._render()
     }
 
@@ -156,7 +200,7 @@
     async _render() {
       if (!this._hass || !this._config || this._cards) return
 
-      const { tileConfig, headingConfig, gridConfig } = annika()
+      const { tileConfig, headingConfig, gridConfig, HEADING_CSS, appendHeading } = annika()
       const helpers = await window.loadCardHelpers()
       const {
         logbook_hours: logbookHours = DEFAULT_LOGBOOK_HOURS,
@@ -180,13 +224,30 @@
       // An explicit `toggle` in the config still wins.
       const toggles = this._participationToggles()
       const withToggle = (item) => {
-        if (item.toggle || !toggles.has(item.entity)) return item
+        // `!== undefined` rather than a truth test, so `toggle: false` means
+        // what it says. A truth test would auto-pair the sensor anyway and
+        // leave no way at all to ask for a sensor without a checkbox.
+        if (item.toggle !== undefined || !toggles.has(item.entity)) return item
         return { ...item, toggle: { entity: toggles.get(item.entity), color: item.color } }
       }
+
+      // Plain tiles, two per row like the sensors — see sirenColumns for the
+      // one style that needs more room.
+      const sirenGrid = () =>
+        gridConfig(
+          this._sirens.map((item) => tileConfig({ color, ...item })),
+          sirenColumns(this._sirens),
+        )
 
       const sensorCards = [headingConfig(headings.motion), tileGrid(this._motionSensors.map(withToggle))]
       if (this._doorSensors.length > 0) {
         sensorCards.push(headingConfig(headings.doors), tileGrid(this._doorSensors.map(withToggle)))
+      }
+      // In the sensor column the sirens land under Movimiento and Puertas, so
+      // they get a heading of their own — without one they read as more doors.
+      // Under the logbook they are the only thing there and do not need it.
+      if (this._sirens.length > 0 && this._sirenPosition === 'sensors') {
+        sensorCards.push(headingConfig(headings.sirens), sirenGrid())
       }
 
       const alarmConfig = {
@@ -245,7 +306,9 @@
       if (this._automations.length > 0) {
         logbookColumn.appendChild(build(tileGrid(this._automations, { features: [{ type: 'toggle' }] })))
       }
-      logbookColumn.appendChild(build(headingConfig(headings.activity)))
+      this._cards.push(
+        await appendHeading(logbookColumn, helpers, this._hass, headings.activity, { style: 'title' }),
+      )
 
       const logbook = document.createElement('div')
       logbook.className = 'annika-logbook'
@@ -254,32 +317,14 @@
 
       // Sirens sit under the logbook rather than at the end of the sensor
       // column: there are one or two of them, and the sensor column is long.
-      if (this._sirens.length > 0) {
-        // The same `ha-control-switch` Home Assistant's native toggle feature
-        // renders, but in the tile's own row: the native one always takes a
-        // row of its own, and this tile reads better as one. Full width and no
-        // heading, so it sits as the last row of the activity column.
-        logbookColumn.appendChild(
-          build(
-            gridConfig(
-              this._sirens.map((item) =>
-                tileConfig(
-                  { color, ...item },
-                  {
-                    features: [
-                      {
-                        type: 'custom:annika-entity-toggle-feature',
-                        entity: item.toggle?.entity || item.entity,
-                        style: 'inline-switch',
-                      },
-                    ],
-                  },
-                ),
-              ),
-              1,
-            ),
-          ),
-        )
+      //
+      // A plain tile by default — no control, two per row, exactly like every
+      // sensor above them, so the column reads as one thing. A siren that
+      // should be switchable from here says so with `toggle:`, and since a
+      // toggle that names no entity of its own controls the tile's entity,
+      // `toggle: { style: switch }` is the whole of it.
+      if (this._sirens.length > 0 && this._sirenPosition === 'activity') {
+        logbookColumn.appendChild(build(sirenGrid()))
       }
 
       const columns = [build(alarmConfig), logbookColumn, build(sensorsConfig)]
@@ -287,6 +332,7 @@
 
       this.innerHTML = `
         <style>
+          ${HEADING_CSS}
           .annika-alarm-grid {
             display: grid;
             grid-template-columns: repeat(3, 1fr);

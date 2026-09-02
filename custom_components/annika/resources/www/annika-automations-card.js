@@ -183,7 +183,7 @@
       if (!this._hass || !this._config || this._built) return
       this._built = true
 
-      const { tileConfig, headingConfig } = annika()
+      const { tileConfig, HEADING_CSS, appendHeading } = annika()
       const helpers = await window.loadCardHelpers()
       const minWidth = this._config.tile_min_width || DEFAULT_TILE_MIN_WIDTH
       const color = this._config.color === undefined ? DEFAULT_COLOR : this._config.color
@@ -202,12 +202,7 @@
           .annika-tile-row > * {
             min-width: 0;
           }
-          .annika-heading {
-            display: block;
-          }
-          .annika-heading:not(:first-child) {
-            margin-top: var(--ha-section-row-gap, 8px);
-          }
+          ${HEADING_CSS}
         </style>
       `
       this._cards = []
@@ -219,16 +214,13 @@
         return element
       }
 
-      const appendHeading = async (text, style, icon) => {
-        const heading = await build(headingConfig(text, { style, icon }))
-        heading.classList.add('annika-heading')
-        this.appendChild(heading)
-      }
+      const addHeading = async (text, style, icon) =>
+        this._cards.push(await appendHeading(this, helpers, this._hass, text, { style, icon }))
 
-      if (this._config.title) await appendHeading(this._config.title, 'title')
+      if (this._config.title) await addHeading(this._config.title, 'title')
 
       for (const group of this._groups) {
-        if (group.name) await appendHeading(group.name, headingStyle, group.icon)
+        if (group.name) await addHeading(group.name, headingStyle, group.icon)
 
         const row = document.createElement('div')
         row.className = 'annika-tile-row'

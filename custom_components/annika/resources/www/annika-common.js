@@ -8,12 +8,34 @@
 //     color: amber                     # optional, tile accent color
 //     toggle: input_boolean.x          # optional, see below
 //
-// `toggle` also accepts an object so the switch can have its own color,
-// independent of the tile's:
+// `toggle` also accepts an object, so the control can have its own color
+// (independent of the tile's) and pick how it looks:
 //
 //     toggle:
-//       entity: input_boolean.x
+//       entity: input_boolean.x   # optional, defaults to the tile's entity
+//       style: checkbox           # optional, one of the four below
 //       color: green
+//
+//     inline         (default) a small checkbox pulled into the tile's own
+//                    row, so the tile stays one row tall
+//     inline-switch  Home Assistant's own ha-control-switch, positioned into
+//                    the tile's row. It is wide, so give those tiles a full
+//                    row to sit in
+//     checkbox       the same checkbox, on a row of its own below
+//     switch         Home Assistant's own toggle feature, on its own row —
+//                    the very same control a light tile gets
+//
+// `switch` on a toggle that controls the tile's own entity and asks for no
+// colour is rendered as HA's built-in `toggle` feature, not as ours: it is
+// the same thing, so there is no reason to hand-roll it. Everything else
+// needs the custom feature — the built-in one only knows about the tile's own
+// entity, always takes a row of its own, and paints itself with the tile's
+// state colour.
+//
+// `toggle: false` means no toggle at all — which is not the same as leaving
+// it out. Some cards add one by themselves (the alarm card pairs each sensor
+// with the participation switch the Annika integration made for it), and
+// `false` is how they are told not to.
 //
 // A bare entity id string is also accepted and normalized to
 // `{ entity: "<id>" }`, so both forms below are valid and can be mixed:
@@ -23,16 +45,18 @@
 //     - entity: light.kitchen
 //       name: Kitchen
 //
-// `toggle` renders a switch under the tile bound to *another* entity —
+// `toggle` renders a control on the tile bound to *another* entity —
 // typically an `input_boolean` helper that an automation checks to decide
 // whether it should react to this entity at all. The tile keeps showing its
-// own state; the switch controls the helper. See
-// annika-entity-toggle-feature.js.
+// own state; the control flips the helper. Naming no entity points it at the
+// tile's own entity instead, which is how a siren gets a switch for itself.
+// See annika-entity-toggle-feature.js.
 //
-// Note: `toggle` adds a feature row to the tile. On cards where tiles
-// already carry a feature (lights, covers) that makes those tiles one row
-// taller than their neighbours, so use it there only if every tile in the
-// same row has it too.
+// Note: the `checkbox` and `switch` styles add a row to the tile. On cards
+// where tiles already carry a feature (lights, covers) that makes those tiles
+// one row taller than their neighbours, so use them there only if every tile
+// in the same row has one too. The two `inline` styles do not have this
+// problem — that is what they are for.
 //
 // This module only exposes helpers on `window.Annika`; the cards look it up
 // lazily (at render time, not at import time), so the load order between the
@@ -40,11 +64,59 @@
 ;(() => {
   const ITEM_KEYS = ['entity', 'name', 'icon', 'color', 'toggle']
 
+  // Kept in step with annika-entity-toggle-feature.js, which rejects anything
+  // else. Validated here too so a typo in a dashboard fails while the card is
+  // being configured, naming the card and the styles, instead of surfacing
+  // later as a broken tile.
+  const TOGGLE_STYLES = ['inline', 'inline-switch', 'checkbox', 'switch']
+
   // "entity_id" | { entity, ... } -> "entity_id"
   function entityId(value, cardName) {
     if (typeof value === 'string') return value
     if (value && typeof value === 'object' && typeof value.entity === 'string') return value.entity
     throw new Error(`${cardName}: expected an entity id string or an object with an "entity" key`)
+  }
+
+  // The `toggle` key of an item, normalized.
+  //
+  //   false | null            -> false, meaning "no toggle", explicitly
+  //   "entity_id"             -> { entity }
+  //   { entity?, style?, color? }
+  //
+  // `entity` is optional: a toggle that names none controls the tile's own
+  // entity. `false` is returned rather than dropped so a card can tell "the
+  // user said no" apart from "the user said nothing", which is what lets the
+  // alarm card skip a sensor when auto-pairing its participation switch.
+  function normalizeToggle(value, item, cardName) {
+    if (value === false || value === null) return false
+
+    const object = typeof value === 'object' && value !== null
+    if (!object && typeof value !== 'string') {
+      throw new Error(
+        `${cardName}: "toggle" must be an entity id, false, or ` +
+          '{ entity?, style?, color? }',
+      )
+    }
+
+    const style = object ? value.style : undefined
+    if (style !== undefined && !TOGGLE_STYLES.includes(style)) {
+      throw new Error(
+        `${cardName}: "toggle.style" must be one of ${TOGGLE_STYLES.join(', ')}`,
+      )
+    }
+
+    const entity = object ? value.entity : value
+    if (entity !== undefined && typeof entity !== 'string') {
+      throw new Error(`${cardName}: "toggle.entity" must be an entity id`)
+    }
+
+    return {
+      entity,
+      style,
+      // A toggle without its own color follows the tile's color, and falls
+      // back to `primary` inside the feature.
+      color: (object ? value.color : undefined) ?? item.color,
+    }
   }
 
   // "entity_id" | { entity, name?, icon?, color?, toggle? } -> normalized object
@@ -58,13 +130,7 @@
         if (item[key] !== undefined) normalized[key] = item[key]
       }
       if (normalized.toggle !== undefined) {
-        const toggle = normalized.toggle
-        normalized.toggle = {
-          entity: entityId(toggle, cardName),
-          // A toggle without its own color follows the tile's color, and
-          // falls back to `primary` inside the feature.
-          color: (typeof toggle === 'object' ? toggle.color : undefined) ?? normalized.color,
-        }
+        normalized.toggle = normalizeToggle(normalized.toggle, normalized, cardName)
       }
       return normalized
     }
@@ -83,19 +149,47 @@
     return items.map((item) => normalizeItem(item, cardName))
   }
 
+  // The feature config for an item's `toggle`.
+  //
+  // Home Assistant's own `toggle` feature is used wherever it can be, so a
+  // siren ends up with the exact control a light has — same element, same
+  // behaviour, none of our code in the way. It only fits when all three of
+  // these hold, and each rules it out for a real reason:
+  //
+  //   - the control is for the tile's own entity. The native feature has no
+  //     concept of a second entity, which is the whole reason the custom one
+  //     exists: an alarm sensor's tile shows the sensor while its control
+  //     flips the participation switch.
+  //   - the style is `switch`. The native feature always takes a row of its
+  //     own and that is not configurable, so nothing inline can be it. The
+  //     `inline-switch` style still renders Home Assistant's own
+  //     `ha-control-switch` — just positioned into the tile's row by us.
+  //   - no colour was asked for. The native feature paints itself with the
+  //     tile's state colour and takes no colour of its own.
+  function toggleFeature(item) {
+    const entity = item.toggle.entity || item.entity
+    const native =
+      entity === item.entity &&
+      item.toggle.style === 'switch' &&
+      item.toggle.color === undefined
+
+    if (native) return { type: 'toggle' }
+
+    return {
+      type: 'custom:annika-entity-toggle-feature',
+      entity,
+      style: item.toggle.style,
+      color: item.toggle.color,
+    }
+  }
+
   // Native HA tile card config for a normalized item. Card-level defaults
   // (features, features_position, hide_state, vertical, ...) go in `options`;
   // the item's own entity/name/icon/color always win, and its optional
   // `toggle` helper is appended as an extra feature row.
   function tileConfig(item, options = {}) {
     const features = [...(options.features || [])]
-    if (item.toggle) {
-      features.push({
-        type: 'custom:annika-entity-toggle-feature',
-        entity: item.toggle.entity,
-        color: item.toggle.color,
-      })
-    }
+    if (item.toggle) features.push(toggleFeature(item))
 
     return {
       type: 'tile',
@@ -133,13 +227,36 @@
     return item.name || hass?.states?.[item.entity]?.attributes?.friendly_name || item.entity
   }
 
-  function createHeader(text, margin = '16px 0 8px 4px') {
-    const header = document.createElement('div')
-    header.textContent = text
-    header.style.fontSize = '1.2em'
-    header.style.fontWeight = '500'
-    header.style.margin = margin
-    return header
+  // The one heading treatment every Annika card uses.
+  //
+  // This lived as four identical copies across the cards, and three others
+  // built their headings some other way — a styled <div> here, a bare heading
+  // card there. The result was headings that looked subtly different from one
+  // view to the next: same font, but 62px of air under the heading on the
+  // lights view against 97px on the AC one. There is nothing to keep in step
+  // by hand now; a card either uses `appendHeading` or it has no heading.
+  //
+  // Include HEADING_CSS in the card's own <style> block, then append with
+  // `appendHeading`. Both are needed: the class is what the rules apply to.
+  const HEADING_CSS = `
+    .annika-heading {
+      display: block;
+    }
+    .annika-heading:not(:first-child) {
+      margin-top: var(--ha-section-row-gap, 8px);
+    }
+  `
+
+  // Appends Home Assistant's own heading card to `host`, carrying the shared
+  // class. Returns the element so the caller can keep it for hass updates.
+  //   style  'title' (large, primary) | 'subtitle' (small, secondary) —
+  //          group headings on a stock dashboard are subtitles
+  async function appendHeading(host, helpers, hass, text, { style = 'subtitle', icon } = {}) {
+    const element = await helpers.createCardElement(headingConfig(text, { style, icon }))
+    element.hass = hass
+    element.classList.add('annika-heading')
+    host.appendChild(element)
+    return element
   }
 
   // --- entity discovery ---------------------------------------------------
@@ -514,12 +631,7 @@
             .annika-tile-row > * {
               min-width: 0;
             }
-            .annika-heading {
-              display: block;
-            }
-            .annika-heading:not(:first-child) {
-              margin-top: var(--ha-section-row-gap, 8px);
-            }
+            ${HEADING_CSS}
           </style>
         `
         this._cards = []
@@ -531,16 +643,13 @@
           return element
         }
 
-        const appendHeading = async (text, style, icon) => {
-          const heading = await build(headingConfig(text, { style, icon }))
-          heading.classList.add('annika-heading')
-          this.appendChild(heading)
-        }
+        const addHeading = async (text, style, icon) =>
+          this._cards.push(await appendHeading(this, helpers, this._hass, text, { style, icon }))
 
-        if (this._config.title) await appendHeading(this._config.title, 'title')
+        if (this._config.title) await addHeading(this._config.title, 'title')
 
         for (const group of this._groups) {
-          if (group.name) await appendHeading(group.name, headingStyle, group.icon)
+          if (group.name) await addHeading(group.name, headingStyle, group.icon)
 
           const row = document.createElement('div')
           row.className = 'annika-tile-row'
@@ -600,7 +709,8 @@
     headingConfig,
     gridConfig,
     displayName,
-    createHeader,
+    HEADING_CSS,
+    appendHeading,
     entityArea,
     isUserFacing,
     discoverEntities,

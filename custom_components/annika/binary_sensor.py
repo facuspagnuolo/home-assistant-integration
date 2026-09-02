@@ -3,13 +3,18 @@
 One per configured zone: the physical sensor ANDed with Annika's
 participation flag. This is what the alarm groups should contain — see
 alarm.py for the shape of the whole thing.
+
+These entities deliberately belong to no device. Home Assistant only creates
+a device for entities that come from a config entry, and this integration is
+set up from YAML, so a DeviceInfo here never grouped anything — and as of
+2025 the frame helper warns about it, with removal announced for 2027.8.
+Grouping these in the UI is what areas are for.
 """
 
 from __future__ import annotations
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
@@ -22,29 +27,6 @@ from .alarm import (
     effective_is_on,
     source_is_alive,
 )
-from .const import DOMAIN
-
-
-def alarm_device_info() -> DeviceInfo:
-    """Annika's own device.
-
-    Deliberately not attached to the source integration's device: a device
-    belongs to the integration that created it, and Annika only reads those
-    sensors — it does not own the panel.
-
-    Note that Home Assistant only registers a device for entities that belong
-    to a config entry, and this integration is set up from YAML, so today this
-    is ignored and the entities show up ungrouped. It is kept because it costs
-    nothing and starts working the day Annika grows a config flow; grouping
-    them in the meantime is what areas are for.
-    """
-
-    return DeviceInfo(
-        identifiers={(DOMAIN, "alarm")},
-        name="Annika Alarm",
-        manufacturer="Annika",
-        model="Alarm Logic",
-    )
 
 
 async def async_setup_platform(
@@ -86,7 +68,6 @@ class AnnikaAlarmBinarySensor(BinarySensorEntity):
         self._attr_name = f"{sensor.name} Alarm"
         self._attr_unique_id = f"{sensor.unique_key}_alarm"
         self._attr_device_class = sensor.device_class
-        self._attr_device_info = alarm_device_info()
 
     def _source_state(self) -> str | None:
         state = self.hass.states.get(self._sensor.source_entity_id)

@@ -15,7 +15,6 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 from .alarm import ATTR_SOURCE_ENTITY_ID, DATA_ALARM, AnnikaAlarmSensor, AnnikaAlarmSensors
-from .binary_sensor import alarm_device_info
 
 
 async def async_setup_platform(
@@ -51,7 +50,6 @@ class AnnikaAlarmEnabledSwitch(SwitchEntity, RestoreEntity):
         # neither collides with the source entity. See binary_sensor.py.
         self._attr_name = f"{sensor.name} Alarm Enabled"
         self._attr_unique_id = f"{sensor.unique_key}_alarm_enabled"
-        self._attr_device_info = alarm_device_info()
 
     @property
     def is_on(self) -> bool:

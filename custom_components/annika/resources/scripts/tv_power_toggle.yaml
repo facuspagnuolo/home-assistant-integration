@@ -1,0 +1,80 @@
+script:
+  tv_power_toggle:
+    alias: TV Power Toggle
+    # One button for both directions, because turning a TV off and turning one
+    # on are not the same operation and cannot be the same service call.
+    #
+    # Off is a normal command: the TV is awake and listening, so
+    # `media_player.turn_off` reaches it.
+    #
+    # On cannot be. The TV's network interface is asleep, so nothing sent over
+    # the integration's connection arrives — which is why pressing power used
+    # to appear dead in one direction only. Waking it is Wake-on-LAN, sent
+    # here directly rather than through `media_player.turn_on`: Home Assistant
+    # used to send the magic packet itself when it knew the TV's MAC, but that
+    # implicit Wake-on-LAN is deprecated and removed in 2026.8, after which
+    # `turn_on` only works if the device has a turn-on trigger automation
+    # wired up per unit. Sending the packet ourselves needs no per-unit setup
+    # and does not care which side of that change the unit is on.
+    #
+    # Requires the `wake_on_lan` integration, and Wake-on-LAN enabled on the
+    # TV itself — without that nothing can wake it over the network.
+    description: Turn a TV on with Wake-on-LAN, or off through its media player.
+    icon: mdi:power
+    # `single`, and deliberately not `restart`. The wake loop below is a burst
+    # that has to be allowed to finish: with `restart`, an impatient second
+    # press cancelled the burst already in flight and started it over from
+    # zero, so mashing the button made waking the TV *less* likely, not more.
+    # `single` drops the extra presses and lets the first burst run out.
+    #
+    # The cost is that a press meant to turn the TV off is ignored while a
+    # burst is running. That window is about two seconds.
+    mode: single
+    fields:
+      tv:
+        required: true
+        selector:
+          entity:
+            domain: media_player
+      mac:
+        required: true
+        selector:
+          text: null
+    sequence:
+      - choose:
+          - conditions:
+              - condition: template
+                # `!= 'on'`, not `== 'off'`: a Samsung media_player reports
+                # `unavailable` rather than `off` when the TV is asleep and
+                # the integration has neither a MAC nor a turn-on action to
+                # keep it available. Comparing against 'off' misses that and
+                # falls through to turning off a TV that is already off.
+                value_template: "{{ states(tv) != 'on' }}"
+            sequence:
+              # One packet is not enough. A TV in light standby answers the
+              # first one, but from deep sleep its network interface ignores
+              # several before it comes up — measured at four on an Office TV.
+              # Home Assistant's own Samsung integration does the same thing
+              # for the same reason, sending to the TV's IP and then
+              # broadcasting rather than trusting a single packet.
+              #
+              # A burst: 20 packets 100ms apart, about two seconds end to
+              # end. Stops as soon as the TV reports itself on, so a TV that
+              # wakes on the first packet costs one packet. The cap is what
+              # makes it terminate when the media_player is slow to notice —
+              # magic packets are 102 bytes of UDP, so the extra ones cost
+              # nothing.
+              - repeat:
+                  sequence:
+                    - action: wake_on_lan.send_magic_packet
+                      data:
+                        mac: "{{ mac }}"
+                    - delay:
+                        milliseconds: 100
+                  until:
+                    - condition: template
+                      value_template: "{{ is_state(tv, 'on') or repeat.index >= 20 }}"
+        default:
+          - action: media_player.turn_off
+            target:
+              entity_id: "{{ tv }}"

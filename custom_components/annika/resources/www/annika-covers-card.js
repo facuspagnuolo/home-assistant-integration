@@ -200,7 +200,7 @@
       if (!this._hass || !this._config || this._built) return
       this._built = true
 
-      const { tileConfig, headingConfig } = annika()
+      const { tileConfig, HEADING_CSS, appendHeading } = annika()
       const helpers = await window.loadCardHelpers()
       const minWidth = this._config.tile_min_width || DEFAULT_TILE_MIN_WIDTH
       const color = this._config.color === undefined ? DEFAULT_COLOR : this._config.color
@@ -221,12 +221,7 @@
           .annika-tile-row > * {
             min-width: 0;
           }
-          .annika-heading {
-            display: block;
-          }
-          .annika-heading:not(:first-child) {
-            margin-top: var(--ha-section-row-gap, 8px);
-          }
+          ${HEADING_CSS}
         </style>
       `
       this._cards = []
@@ -239,9 +234,12 @@
       }
 
       for (const group of this._groups) {
-        const heading = await build(headingConfig(group.name, { style: headingStyle, icon: group.icon }))
-        heading.classList.add('annika-heading')
-        this.appendChild(heading)
+        this._cards.push(
+          await appendHeading(this, helpers, this._hass, group.name, {
+            style: headingStyle,
+            icon: group.icon,
+          }),
+        )
 
         const row = document.createElement('div')
         row.className = 'annika-tile-row'

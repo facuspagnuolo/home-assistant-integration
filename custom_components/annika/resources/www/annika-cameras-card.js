@@ -113,7 +113,7 @@
     async _render() {
       if (!this._hass || !this._config || this._grid) return
 
-      const { gridConfig, createHeader } = annika()
+      const { gridConfig, HEADING_CSS, appendHeading } = annika()
       const helpers = await window.loadCardHelpers()
       this._grid = await helpers.createCardElement(
         gridConfig(
@@ -123,9 +123,9 @@
       )
       this._grid.hass = this._hass
 
-      this.innerHTML = ''
+      this.innerHTML = `<style>${HEADING_CSS}</style>`
       if (this._config.title) {
-        this.appendChild(createHeader(this._config.title, '0 0 8px 4px'))
+        this._title = await appendHeading(this, helpers, this._hass, this._config.title, { style: 'title' })
       }
       this.appendChild(this._grid)
     }
