@@ -73,7 +73,9 @@
     }
   }
 
-  customElements.define('annika-heating-card', AnnikaHeatingCard)
+    // Declared, not registered: annika-common.js does the registering once its
+  // helpers exist. See the queue at the bottom of that file for why.
+  ;(window.AnnikaCards ||= []).push(['annika-heating-card', AnnikaHeatingCard, ['annika-ac-card']])
 
   window.customCards = window.customCards || []
   window.customCards.push({

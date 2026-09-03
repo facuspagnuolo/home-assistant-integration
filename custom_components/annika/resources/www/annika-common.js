@@ -58,9 +58,18 @@
 // in the same row has one too. The two `inline` styles do not have this
 // problem — that is what they are for.
 //
-// This module only exposes helpers on `window.Annika`; the cards look it up
-// lazily (at render time, not at import time), so the load order between the
-// card scripts does not matter.
+// This module only exposes helpers on `window.Annika`, and the cards look it
+// up lazily rather than at import time — but that alone was not enough. The
+// files are injected with `add_extra_js_url`, which gives no ordering
+// guarantee, so a card could register itself, have Lovelace build it, and
+// only then find `window.Annika` missing: `setConfig` threw and Lovelace
+// showed a permanent "Configuration error" on every cold load.
+//
+// So the cards no longer register themselves at all: they declare themselves
+// on `window.AnnikaCards` and this file registers them once the helpers are in
+// place. See the bottom of this file. An unregistered tag is the failure mode
+// Lovelace recovers from by itself, by waiting on `customElements.whenDefined`
+// and rebuilding.
 ;(() => {
   const ITEM_KEYS = ['entity', 'name', 'icon', 'color', 'toggle']
 
@@ -717,4 +726,37 @@
     groupedTileCard,
     climateFeatures,
   }
+
+  // --- card registration -------------------------------------------------
+  //
+  // The card files do not call `customElements.define` themselves. They cannot
+  // safely: `add_extra_js_url` gives no ordering guarantee, so a card file can
+  // run before this one. A card registered that early can be built by Lovelace
+  // before `window.Annika` exists, and its `setConfig` then throws for want of
+  // these helpers — which Lovelace turns into a "Configuration error" card
+  // that only a page reload clears. That is what made every Annika card fail
+  // on the first load of a session.
+  //
+  // So each card only *declares* itself, in one line:
+  //
+  //   ;(window.AnnikaCards ||= []).push(['annika-lights-card', AnnikaLightsCard])
+  //
+  // and registering happens here, where the helpers are known to exist. Cards
+  // that loaded first are sitting in the array and get drained now; cards that
+  // load later find `push` already replaced by the registering version, so
+  // both orders end in the same place and neither needs to know which it is.
+  //
+  // The optional third element lists other Annika tags the card builds and so
+  // needs defined — the heating card builds ac cards.
+  function defineCard([tag, cls, deps = []]) {
+    const define = () => {
+      if (!customElements.get(tag)) customElements.define(tag, cls)
+    }
+    if (deps.every((dep) => customElements.get(dep))) return define()
+    Promise.all(deps.map((dep) => customElements.whenDefined(dep))).then(define)
+  }
+
+  const declared = window.AnnikaCards || []
+  window.AnnikaCards = { push: defineCard }
+  declared.forEach(defineCard)
 })()
