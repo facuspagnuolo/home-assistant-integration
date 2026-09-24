@@ -197,12 +197,12 @@ class AnnikaAlarmSensors:
         if keys or self._config.get("devices"):
             matched_devices = {
                 device.id
-                for device in device_registry.devices.values()
+                for device in device_registry.devices
                 if self._matches_device(device, keys)
             }
             missing = keys - {
                 slugify(name)
-                for device in device_registry.devices.values()
+                for device in device_registry.devices
                 if device.id in matched_devices
                 for name in (device.name_by_user, device.name)
                 if name
