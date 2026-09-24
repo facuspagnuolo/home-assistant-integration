@@ -353,9 +353,14 @@
     }
   }
 
-  if (!customElements.get(FEATURE)) {
-    customElements.define(FEATURE, AnnikaEntityToggleFeature)
-  }
+  // Deferred until HA's app.js has swapped in its scoped registry polyfill,
+  // for the reason in the registration block at the bottom of
+  // annika-common.js.
+  customElements.whenDefined('home-assistant').then(() => {
+    if (!customElements.get(FEATURE)) {
+      customElements.define(FEATURE, AnnikaEntityToggleFeature)
+    }
+  })
 
   // HA renamed "tile features" to "card features"; register in both
   // registries so the feature is recognized on old and new frontends.

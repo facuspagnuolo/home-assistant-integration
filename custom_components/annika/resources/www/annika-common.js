@@ -748,12 +748,30 @@
   //
   // The optional third element lists other Annika tags the card builds and so
   // needs defined — the heating card builds ac cards.
+  //
+  // Nothing is defined before `home-assistant` is. HA's own app.js installs
+  // the scoped-custom-element-registry polyfill, which *replaces*
+  // `window.customElements` with a new registry that knows nothing about
+  // what was defined on the native one before it. `add_extra_js_url` imports
+  // race app.js, so on some loads these files ran first: the tags landed on
+  // the native registry, Lovelace's `customElements.get` (the polyfill's)
+  // said they did not exist, and its `whenDefined` never resolved — a
+  // permanent "Custom element doesn't exist" on every Annika card until a
+  // reload happened to win the race. `home-assistant` is defined by app.js
+  // after the polyfill is in place, and `customElements` is looked up again
+  // when `define` runs, so this lands on whichever registry HA ends up using.
+  // Without the polyfill (a browser with native scoped registries) the wait
+  // still resolves, just on the native registry.
+  const haDefined = customElements.whenDefined('home-assistant')
+
   function defineCard([tag, cls, deps = []]) {
-    const define = () => {
-      if (!customElements.get(tag)) customElements.define(tag, cls)
-    }
-    if (deps.every((dep) => customElements.get(dep))) return define()
-    Promise.all(deps.map((dep) => customElements.whenDefined(dep))).then(define)
+    haDefined.then(() => {
+      const define = () => {
+        if (!customElements.get(tag)) customElements.define(tag, cls)
+      }
+      if (deps.every((dep) => customElements.get(dep))) return define()
+      Promise.all(deps.map((dep) => customElements.whenDefined(dep))).then(define)
+    })
   }
 
   const declared = window.AnnikaCards || []
