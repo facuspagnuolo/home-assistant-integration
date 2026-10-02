@@ -7,7 +7,7 @@ send_event:
   fields:
     type:
       name: Type
-      description: Event type (e.g. security, info).
+      description: Event type (e.g. security, system, info).
       required: true
       selector:
         text: null
@@ -41,8 +41,9 @@ send_event:
         Path of the dashboard view to open when the resulting notification
         is tapped (e.g. timbre). Each person lands on their own dashboard: the
         view opens there if that dashboard has it, otherwise they land on the
-        top of their dashboard.
-      required: true
+        top of their dashboard. Required for security and info events; not
+        used by system events.
+      required: false
       selector:
         text: null
     image_url:

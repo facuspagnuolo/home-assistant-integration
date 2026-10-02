@@ -97,21 +97,32 @@ CONFIG_SCHEMA = vol.Schema(
     extra=vol.ALLOW_EXTRA,
 )
 
-SEND_EVENT_SCHEMA = vol.Schema(
+# Event types that reach Annika's staff instead of the unit's customers, so there
+# is no dashboard view for a notification to open.
+EVENT_TYPES_WITHOUT_VIEW = {"system", "heartbeat"}
+
+
+def _require_view_for_customer_events(data: dict) -> dict:
+    if data["type"] not in EVENT_TYPES_WITHOUT_VIEW and not data.get("view"):
+        raise vol.Invalid(f"view is required for {data['type']} events")
+    return data
+
+
+SEND_EVENT_SCHEMA = vol.All(vol.Schema(
     {
         vol.Required("type"): cv.string,
         vol.Required("message"): cv.string,
         vol.Optional("title"): cv.string,
         vol.Optional("actor"): cv.string,
         vol.Optional("event_id"): cv.string,
-        vol.Required("view"): vol.All(cv.string, vol.Match(r"^[\w-]+$")),
+        vol.Optional("view"): vol.All(cv.string, vol.Match(r"^[\w-]+$")),
         # `cv.string` (not `cv.url`) for image_url since Annika's backend also
         # accepts a relative HA path here, not only an absolute URL — see
         # backend/src/validators/unit-event.ts in the app repo.
         vol.Optional("image_url"): cv.string,
         vol.Optional("data"): dict,
     }
-)
+), _require_view_for_customer_events)
 
 
 
