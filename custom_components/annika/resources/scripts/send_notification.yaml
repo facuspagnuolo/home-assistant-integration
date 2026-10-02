@@ -21,8 +21,8 @@ script:
         required: false
         selector:
           text: null
-      url:
-        required: false
+      view:
+        required: true
         selector:
           text: null
       image_url:
@@ -36,5 +36,5 @@ script:
           message: "{{ message }}"
           actor: "{{ actor | default('', true) }}"
           title: "{{ title | default('', true) }}"
-          url: "{{ url | default('', true) }}"
+          view: "{{ view }}"
           image_url: "{{ image_url | default('', true) }}"

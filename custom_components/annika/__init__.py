@@ -104,12 +104,10 @@ SEND_EVENT_SCHEMA = vol.Schema(
         vol.Optional("title"): cv.string,
         vol.Optional("actor"): cv.string,
         vol.Optional("event_id"): cv.string,
-        # Dashboard path to deep-link to (e.g. "/dashboard-doorbell") and a
-        # snapshot/camera image for the push notification. `cv.string` (not
-        # `cv.url`) for image_url since Annika's backend also accepts a
-        # relative HA path here, not only an absolute URL — see
+        vol.Required("view"): vol.All(cv.string, vol.Match(r"^[\w-]+$")),
+        # `cv.string` (not `cv.url`) for image_url since Annika's backend also
+        # accepts a relative HA path here, not only an absolute URL — see
         # backend/src/validators/unit-event.ts in the app repo.
-        vol.Optional("url"): cv.string,
         vol.Optional("image_url"): cv.string,
         vol.Optional("data"): dict,
     }

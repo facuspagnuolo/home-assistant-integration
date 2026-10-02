@@ -35,12 +35,14 @@ send_event:
       required: false
       selector:
         text: null
-    url:
-      name: URL
+    view:
+      name: View
       description: >-
-        Optional Home Assistant dashboard path to open when the resulting
-        notification is tapped (e.g. /dashboard-doorbell).
-      required: false
+        Path of the dashboard view to open when the resulting notification
+        is tapped (e.g. timbre). Each person lands on their own dashboard: the
+        view opens there if that dashboard has it, otherwise they land on the
+        top of their dashboard.
+      required: true
       selector:
         text: null
     image_url:
