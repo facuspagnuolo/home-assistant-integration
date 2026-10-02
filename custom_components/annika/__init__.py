@@ -28,11 +28,13 @@ from .const import (
     CONF_DEVICES,
     CONF_ENTITIES,
     CONF_EXCLUDE,
+    CONF_RAINBIRD_RECONNECT,
     CONF_UNIT_ID,
     CONF_WEBHOOK_SECRET,
     DOMAIN,
 )
 from .heartbeat import HeartbeatReporter
+from .rainbird import RainbirdReconnector
 from .send_event import async_send_event
 
 _LOGGER = logging.getLogger(__name__)
@@ -61,6 +63,9 @@ CONFIG_SCHEMA = vol.Schema(
                 vol.Required(CONF_API_URL): cv.url,
                 vol.Required(CONF_UNIT_ID): cv.string,
                 vol.Required(CONF_WEBHOOK_SECRET): cv.string,
+                # Find the Rain Bird controller again when its IP changes and
+                # point the rainbird integration at it. See rainbird.py.
+                vol.Optional(CONF_RAINBIRD_RECONNECT, default=False): cv.boolean,
                 # Physical sensors Annika wraps with an alarm participation
                 # switch. Devices can be named or given by registry id; every
                 # binary_sensor they own is picked up. See alarm.py.
@@ -298,6 +303,11 @@ async def async_setup(
     heartbeat_reporter = HeartbeatReporter(hass)
     await heartbeat_reporter.async_start()
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, heartbeat_reporter.async_stop)
+
+    if config[DOMAIN][CONF_RAINBIRD_RECONNECT]:
+        rainbird_reconnector = RainbirdReconnector(hass)
+        await rainbird_reconnector.async_start()
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, rainbird_reconnector.async_stop)
 
     await async_install_resources()
 

@@ -10,3 +10,5 @@ CONF_ALARM_SENSORS = "alarm_sensors"
 CONF_DEVICES = "devices"
 CONF_ENTITIES = "entities"
 CONF_EXCLUDE = "exclude"
+
+CONF_RAINBIRD_RECONNECT = "rainbird_reconnect"
