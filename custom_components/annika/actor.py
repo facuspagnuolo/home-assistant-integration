@@ -22,6 +22,8 @@ carries that name across the iframe boundary and attaches it to the action:
                               v                       v
                   sensor.annika_last_action     event: annika_action
                   (for templates)               (for triggers)
+                                                event: logbook_entry
+                                                (for people — activity.py)
 
 The stamp is a websocket command rather than a service call, and that is the
 one part of this that is not interchangeable. Home Assistant hands each
@@ -80,6 +82,7 @@ from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
 
+from .activity import EVENT_LOGBOOK_ENTRY, logbook_entry
 from .const import DOMAIN
 
 # Set on hass.data so the sensor platform reaches the same store.
@@ -441,6 +444,14 @@ def async_setup_actor(hass: HomeAssistant) -> AnnikaLastAction:
         # describes stay linked in the logbook and in `trigger.context`.
         hass.bus.async_fire(
             EVENT_ANNIKA_ACTION, action.event_data, context=event.context
+        )
+
+        # The line people actually read, shown by annika-activity-card (and
+        # by any logbook that shows this entity). See activity.py.
+        hass.bus.async_fire(
+            EVENT_LOGBOOK_ENTRY,
+            logbook_entry(hass, actor.name, domain, service, action.entity_id),
+            context=event.context,
         )
 
     hass.bus.async_listen(EVENT_CALL_SERVICE, handle_call_service)
