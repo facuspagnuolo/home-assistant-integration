@@ -41,6 +41,7 @@
   // Both are fixed the same blunt, safe way: nothing in a HA dashboard needs
   // page-level horizontal scroll — individual cards can still scroll
   // themselves horizontally if they already do, this only clips the root.
+  var launchScreenHidden = false
   function suppressOverscrollAndOverflow() {
     try {
       var style = document.createElement('style')
@@ -54,7 +55,12 @@
       // then got position/overflow-clipped down to the real size. `100%`
       // resolves against the iframe's own actual rendered box, no viewport
       // unit ambiguity involved.
-      style.textContent = 'html, body { overscroll-behavior: none !important; overflow-x: hidden !important; max-width: 100% !important; }'
+      // HA's own boot screen (logo on an opaque layer, faded out a beat after
+      // the data is in) would flash between Annika's cover and the dashboard,
+      // so it is never shown inside the app. Reported as `launchScreen` in
+      // `ready` so the parent knows it needn't wait for that fade.
+      style.textContent = 'html, body { overscroll-behavior: none !important; overflow-x: hidden !important; max-width: 100% !important; } #ha-launch-screen { display: none !important; }'
+      launchScreenHidden = true
       ;(document.head || document.documentElement).appendChild(style)
     } catch (err) {
       // Best effort — if this fails, HA just keeps its native behavior.
@@ -66,6 +72,7 @@
     try {
       var payload = { source: SOURCE, type: type }
       if (typeof distance === 'number') payload.distance = distance
+      if (type === 'ready' && launchScreenHidden) payload.launchScreen = 'gone'
       window.parent.postMessage(payload, TARGET_ORIGIN)
     } catch (err) {
       // Embedding context rejected the message (unexpected origin, etc). Nothing
@@ -321,6 +328,36 @@
     }, 300)
   }
 
+  // Tells the app when the gateway stops accepting this page's session
+  // cookie, so a later open can load the panel straight away instead of first
+  // asking the backend for a ticket whose only job is to set that same cookie
+  // again. The cookie is HttpOnly and lives on this origin, so the app can't
+  // read its expiry — but this page can ask the gateway, same-origin, with no
+  // CORS involved. Once per page load is enough: the expiry is fixed when the
+  // cookie is issued. A unit reached directly on the LAN has no such endpoint;
+  // the answer is just not OK and nothing is reported, which leaves the app
+  // minting a ticket on every open, exactly as before this existed.
+  var sessionReported = false
+  function postSession() {
+    if (sessionReported) return
+    sessionReported = true
+    try {
+      fetch('/_annika/whoami', { credentials: 'same-origin', cache: 'no-store' })
+        .then(function (response) {
+          return response.ok ? response.json() : null
+        })
+        .then(function (body) {
+          if (!body || typeof body.expires_at !== 'string') return
+          window.parent.postMessage({ source: SOURCE, type: 'session', expiresAt: body.expires_at }, TARGET_ORIGIN)
+        })
+        .catch(function () {
+          // Best effort — see above.
+        })
+    } catch (err) {
+      // Same.
+    }
+  }
+
   var attempts = 0
   var lastConnection = null
 
@@ -342,6 +379,7 @@
       // HA ever swaps the connection object out from under us.
       post('ready')
       postPath()
+      postSession()
       if (!actor) post('actor-request')
       nudgeResizeOnce()
       setTimeout(tick, 2000)
