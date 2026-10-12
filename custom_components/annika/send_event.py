@@ -91,5 +91,7 @@ async def async_send_event(hass: HomeAssistant, call: ServiceCall) -> None:
         event["imageUrl"] = call.data["image_url"]
     if call.data.get("data"):
         event["data"] = call.data["data"]
+    if call.data.get("navigate"):
+        event["navigate"] = True
 
     await AnnikaEventClient(hass).async_send(event)

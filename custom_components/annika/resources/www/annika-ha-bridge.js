@@ -209,12 +209,57 @@
     if (event.origin !== TARGET_ORIGIN) return
     var data = event.data
     if (!data || typeof data !== 'object' || data.source !== 'annika-app') return
+    if (data.type === 'navigate') {
+      navigateTo(data.path)
+      return
+    }
     if (data.type !== 'actor') return
     // An explicit null is the app saying it no longer knows who is there
     // (signed out, session expired) — honored, so actions stop being
     // attributed rather than keeping the last name around.
     actor = readActor(data.actor)
   })
+
+  // A path inside this same Home Assistant, nothing else: the app uses this to
+  // bring an event's view up on a paired tablet (someone rang the doorbell) and
+  // to take the tablet back to its own dashboard afterwards.
+  function isUnitPath(path) {
+    return (
+      typeof path === 'string' &&
+      path.length > 0 &&
+      path.length <= 300 &&
+      path.charAt(0) === '/' &&
+      path.charAt(1) !== '/' &&
+      path.indexOf('\\') === -1 &&
+      !/[\u0000-\u001f]/.test(path)
+    )
+  }
+
+  // HA's own router reacts to the same event its `navigate()` helper fires,
+  // so this changes the dashboard in place without reloading the frontend.
+  function navigateTo(path) {
+    if (!isUnitPath(path)) return
+    try {
+      var current = window.location.pathname + window.location.search
+      if (current === path) return
+      window.history.pushState(null, '', path)
+      window.dispatchEvent(new CustomEvent('location-changed', { detail: { replace: false } }))
+    } catch (err) {
+      // A path HA refuses just leaves the current dashboard on screen.
+    }
+  }
+
+  // Lets the app know someone is using the screen, so a tablet showing the
+  // doorbell doesn't snap back to its dashboard in the middle of a conversation.
+  var lastInteraction = 0
+  function reportInteraction() {
+    var now = Date.now()
+    if (now - lastInteraction < 2000) return
+    lastInteraction = now
+    post('interaction')
+  }
+  document.addEventListener('pointerdown', reportInteraction, { capture: true, passive: true })
+  document.addEventListener('keydown', reportInteraction, { capture: true, passive: true })
 
   // Collects what the call is about, in whichever shape
   // home-assistant-js-websocket put it in — `target.entity_id` since the

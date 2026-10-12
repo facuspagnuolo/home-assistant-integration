@@ -127,6 +127,7 @@ SEND_EVENT_SCHEMA = vol.All(vol.Schema(
         # backend/src/validators/unit-event.ts in the app repo.
         vol.Optional("image_url"): cv.string,
         vol.Optional("data"): dict,
+        vol.Optional("navigate", default=False): cv.boolean,
     }
 ), _require_view_for_customer_events)
 

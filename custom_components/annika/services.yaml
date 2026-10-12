@@ -46,6 +46,18 @@ send_event:
       required: false
       selector:
         text: null
+    navigate:
+      name: Navigate
+      description: >-
+        Also bring the view up on this unit's paired tablets (the ones that
+        don't receive notifications), and take them back to their dashboard
+        after two minutes with nobody touching them. Each tablet goes to the
+        view inside its own dashboard, and only if that dashboard has it.
+        Only for security and info events.
+      required: false
+      default: false
+      selector:
+        boolean: null
     image_url:
       name: Image URL
       description: >-

@@ -29,6 +29,12 @@ script:
         required: false
         selector:
           text: null
+      navigate:
+        description: Also bring this view up on the unit's paired tablets.
+        required: false
+        default: false
+        selector:
+          boolean: null
     sequence:
       - action: annika.send_event
         data:
@@ -38,3 +44,4 @@ script:
           title: "{{ title | default('', true) }}"
           view: "{{ view }}"
           image_url: "{{ image_url | default('', true) }}"
+          navigate: "{{ navigate | default(false) | bool }}"
