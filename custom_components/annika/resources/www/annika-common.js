@@ -613,7 +613,8 @@
           include: this._config.include,
           exclude: this._config.exclude,
           overrides: this._config.overrides,
-          ungrouped: this._config.ungrouped,
+          ungrouped:
+            this._config.ungrouped ?? textsFor(COMMON_TEXTS, language(this._hass, this._config)).ungrouped,
           categoryScope: this._config.category_scope,
         })
       }
@@ -710,7 +711,45 @@
     return features
   }
 
+  // --- texts ---------------------------------------------------------------
+  //
+  // A card's own words follow the user's Home Assistant language (their
+  // profile), or `language:` in the card config. Each card keeps a dictionary
+  // per language, English being the one everything falls back to:
+  //
+  //   const TEXTS = { en: { title: 'Activity' }, es: { title: 'Actividad' } }
+  //   const texts = Annika.textsFor(TEXTS, Annika.language(hass, config))
+  //
+  // A dictionary may nest one level (`{ headings: {...}, labels: {...} }`), and
+  // a language missing a key falls back to English for that key alone. The
+  // card config then overrides single texts on top, as it always could.
+  function language(hass, config) {
+    return (config && config.language) || (hass && hass.locale && hass.locale.language) || (hass && hass.language) || 'en'
+  }
+
+  function textsFor(dictionaries, lang) {
+    // "es-AR" and "es_419" both read as "es".
+    const base = String(lang || 'en').toLowerCase().split(/[-_]/)[0]
+    const english = dictionaries.en || {}
+    const found = dictionaries[base] || {}
+    const merged = { ...english }
+    for (const [key, value] of Object.entries(found)) {
+      merged[key] =
+        value && typeof value === 'object' && english[key] && typeof english[key] === 'object'
+          ? { ...english[key], ...value }
+          : value
+    }
+    return merged
+  }
+
+  const COMMON_TEXTS = {
+    en: { ungrouped: 'Other' },
+    es: { ungrouped: 'Otros' },
+  }
+
   window.Annika = {
+    language,
+    textsFor,
     entityId,
     normalizeItem,
     normalizeItems,

@@ -49,7 +49,8 @@
 //   logbook_height: 420  # optional, px height of the logbook (default 420)
 //   color: primary       # optional, tile color for every tile (default);
 //                        # use `state` for Home Assistant's state coloring
-//   headings:            # optional, section titles (English by default)
+//   language: es         # optional; by default the Home Assistant language
+//   headings:            # optional, section titles (English and Spanish built in)
 //     activity: Actividad   # over the logbook
 //     history: Historial    # over the timeline
 //     motion: Movimiento
@@ -94,14 +95,28 @@
   // mix of per-state colors. `color: state` gives HA's state coloring back.
   const DEFAULT_COLOR = 'primary'
 
-  // English by default so a unit that says nothing keeps reading the same;
-  // override per unit with `headings:` — see the usage block above.
-  const DEFAULT_HEADINGS = {
-    activity: 'Activity',   // over the logbook
-    history: 'History',     // over the timeline
-    motion: 'Sensors',
-    doors: 'Doors',
-    sirens: 'Sirens',   // only shown when the sirens sit in the sensor column
+  // The section titles follow the Home Assistant language (English and
+  // Spanish are built in); override single ones per unit with `headings:` —
+  // see the usage block above.
+  const TEXTS = {
+    en: {
+      headings: {
+        activity: 'Activity',   // over the logbook
+        history: 'History',     // over the timeline
+        motion: 'Sensors',
+        doors: 'Doors',
+        sirens: 'Sirens',   // only shown when the sirens sit in the sensor column
+      },
+    },
+    es: {
+      headings: {
+        activity: 'Actividad',
+        history: 'Historial',
+        motion: 'Sensores',
+        doors: 'Puertas',
+        sirens: 'Sirenas',
+      },
+    },
   }
 
   // Where the sirens go. Two sensible homes, and which one reads better
@@ -208,7 +223,11 @@
         logbook_height: logbookHeight = DEFAULT_LOGBOOK_HEIGHT,
       } = this._config
 
-      const headings = { ...DEFAULT_HEADINGS, ...(this._config.headings || {}) }
+      const { language, textsFor } = annika()
+      const headings = {
+        ...textsFor(TEXTS, language(this._hass, this._config)).headings,
+        ...(this._config.headings || {}),
+      }
 
       const color = this._config.color === undefined ? DEFAULT_COLOR : this._config.color
 
