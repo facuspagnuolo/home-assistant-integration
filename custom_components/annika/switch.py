@@ -14,7 +14,10 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
+from . import irrigation_entities
 from .alarm import ATTR_SOURCE_ENTITY_ID, DATA_ALARM, AnnikaAlarmSensor, AnnikaAlarmSensors
+from .const import DISCOVERY_KIND, KIND_IRRIGATION
+from .irrigation import DATA_IRRIGATION
 
 
 async def async_setup_platform(
@@ -26,6 +29,10 @@ async def async_setup_platform(
     """Set up the participation switches from the YAML config."""
 
     if discovery_info is None:
+        return
+
+    if discovery_info.get(DISCOVERY_KIND) == KIND_IRRIGATION:
+        async_add_entities(irrigation_entities.switches(hass.data[DATA_IRRIGATION]))
         return
 
     sensors: AnnikaAlarmSensors = hass.data[DATA_ALARM]

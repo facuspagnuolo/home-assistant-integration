@@ -1,0 +1,21 @@
+{
+  "entity": {
+    "select": {
+      "start_mode": {
+        "state": {
+          "sunrise": "At sunrise",
+          "time": "At a fixed time"
+        }
+      }
+    },
+    "sensor": {
+      "irrigation_status": {
+        "state": {
+          "idle": "Idle",
+          "running": "Watering",
+          "disabled": "Schedule off"
+        }
+      }
+    }
+  }
+}
