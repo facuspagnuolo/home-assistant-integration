@@ -58,10 +58,9 @@
   // 1 January 2024 was a Monday: Intl names the weekdays from it.
   const A_MONDAY = Date.UTC(2024, 0, 1, 12)
 
-  // The card's own texts, by Home Assistant language (the user's profile
-  // language, or `language:` in the card config). Anything missing in a
-  // language falls back to English; `headings:` and `labels:` in the card
-  // config override single texts on top of either.
+  // The card's own texts, by Home Assistant language (see Annika.textsFor in
+  // annika-common.js). `headings:` and `labels:` in the card config override
+  // single texts on top.
   const TEXTS = {
     en: {
       headings: {
@@ -111,16 +110,6 @@
     },
   }
 
-  // "es-AR" and "es_419" both read as "es".
-  function textsFor(lang) {
-    const base = String(lang || 'en').toLowerCase().split(/[-_]/)[0]
-    const found = TEXTS[base] || TEXTS.en
-    return {
-      headings: { ...TEXTS.en.headings, ...found.headings },
-      labels: { ...TEXTS.en.labels, ...found.labels },
-    }
-  }
-
   function annika() {
     if (!window.Annika) throw new Error(`${CARD}: annika-common.js is not loaded`)
     return window.Annika
@@ -128,10 +117,6 @@
 
   function escapeHtml(value) {
     return String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
-  }
-
-  function language(hass) {
-    return (hass.locale && hass.locale.language) || hass.language || 'en'
   }
 
   // What the card is built from. When it changes (seasons or zones edited in
@@ -175,9 +160,9 @@
     // Assistant language. A change of language builds the card again, since
     // the headings are part of what it is built from.
     _resolveTexts() {
-      const lang = (this._config && this._config.language) || (this._hass ? language(this._hass) : 'en')
+      const lang = annika().language(this._hass, this._config)
       if (this._texts && this._texts.lang === lang) return
-      const { headings, labels } = textsFor(lang)
+      const { headings, labels } = annika().textsFor(TEXTS, lang)
       this._texts = { lang }
       this._headings = { ...headings, ...((this._config && this._config.headings) || {}) }
       this._labels = { ...labels, ...((this._config && this._config.labels) || {}) }
@@ -378,7 +363,7 @@
     // and the minutes per group, each bound to its own entity.
     _table(attributes) {
       const hass = this._hass
-      const lang = (this._config && this._config.language) || language(hass)
+      const lang = annika().language(hass, this._config)
       const weekday = new Intl.DateTimeFormat(lang, { weekday: 'short', timeZone: 'UTC' })
       const month = new Intl.DateTimeFormat(lang, { month: 'short', timeZone: 'UTC' })
       const dayNames = WEEKDAYS.map((_, index) => weekday.format(new Date(A_MONDAY + index * 86400000)))
@@ -507,7 +492,7 @@
     _when(iso) {
       const hass = this._hass
       const timeZone = (hass.config && hass.config.time_zone) || undefined
-      return new Intl.DateTimeFormat((this._config && this._config.language) || language(hass), {
+      return new Intl.DateTimeFormat(annika().language(hass, this._config), {
         timeZone,
         weekday: 'long',
         day: 'numeric',

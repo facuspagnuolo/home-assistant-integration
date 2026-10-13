@@ -17,7 +17,8 @@
 //
 // Usage in a dashboard view:
 //   type: custom:annika-activity-card
-//   title: Actividad          # optional
+//   title: Actividad          # optional (by default, in the Home Assistant language)
+//   language: es              # optional; by default the Home Assistant language
 //   hours_to_show: 168        # optional, default 168 (a week)
 //   limit: 30                 # optional, most recent lines shown
 //   entities:                 # what to show activity for
@@ -28,6 +29,30 @@
   const CARD = 'annika-activity-card'
   const DEFAULT_HOURS = 168
   const DEFAULT_LIMIT = 30
+
+  // The card's own words, by Home Assistant language. English is the fallback.
+  const TEXTS = {
+    en: {
+      title: 'Activity',
+      someone: 'Someone',
+      loading: 'Loading…',
+      error: 'Could not load the activity',
+      emptyDay: 'No activity in the last day.',
+      emptyDays: 'No activity in the last {days} days.',
+      today: 'today',
+      yesterday: 'yesterday',
+    },
+    es: {
+      title: 'Actividad',
+      someone: 'Alguien',
+      loading: 'Cargando…',
+      error: 'No se pudo cargar la actividad',
+      emptyDay: 'Sin actividad en el último día.',
+      emptyDays: 'Sin actividad en los últimos {days} días.',
+      today: 'hoy',
+      yesterday: 'ayer',
+    },
+  }
 
   function entityIds(config) {
     const raw = config.entities ?? (config.entity ? [config.entity] : [])
@@ -129,39 +154,46 @@
       this._render()
     }
 
+    _texts() {
+      const { language, textsFor } = window.Annika
+      return textsFor(TEXTS, language(this._hass, this._config))
+    }
+
     _when(seconds) {
       const hass = this._hass
+      const texts = this._texts()
       const date = new Date(seconds * 1000)
       const timeZone = hass.config && hass.config.time_zone
-      const language = (hass.locale && hass.locale.language) || hass.language || 'es'
+      const language = window.Annika.language(hass, this._config)
       const day = (d) => new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d)
       const time = new Intl.DateTimeFormat(language, { timeZone, hour: '2-digit', minute: '2-digit' }).format(date)
       const today = day(new Date())
       const yesterday = day(new Date(Date.now() - 86400 * 1000))
-      if (day(date) === today) return `hoy ${time}`
-      if (day(date) === yesterday) return `ayer ${time}`
+      if (day(date) === today) return `${texts.today} ${time}`
+      if (day(date) === yesterday) return `${texts.yesterday} ${time}`
       const date_ = new Intl.DateTimeFormat(language, { timeZone, weekday: 'short', day: '2-digit', month: '2-digit' }).format(date)
       return `${date_} ${time}`
     }
 
     _render() {
       if (!this._config) return
-      const title = this._config.title ?? 'Actividad'
+      const texts = this._texts()
+      const title = this._config.title ?? texts.title
       const showEntity = this._ids.length > 1
       const entries = [...this._entries.values()].sort((a, b) => b.when - a.when).slice(0, this._limit)
 
       let body
       if (this._error) {
-        body = `<div class="empty">No se pudo cargar la actividad: ${escapeHtml(this._error)}</div>`
+        body = `<div class="empty">${escapeHtml(texts.error)}: ${escapeHtml(this._error)}</div>`
       } else if (!this._loaded) {
-        body = `<div class="empty">Cargando…</div>`
+        body = `<div class="empty">${escapeHtml(texts.loading)}</div>`
       } else if (entries.length === 0) {
         const days = Math.round(this._hours / 24)
-        body = `<div class="empty">Sin actividad ${days === 1 ? 'en el último día' : `en los últimos ${days} días`}.</div>`
+        body = `<div class="empty">${escapeHtml(days === 1 ? texts.emptyDay : texts.emptyDays.replace('{days}', days))}</div>`
       } else {
         body = entries
           .map((entry) => {
-            const actor = actorOf(entry.message) || 'Alguien'
+            const actor = actorOf(entry.message) || texts.someone
             // Only with more than one entity is "on what" not obvious.
             const detail = showEntity && entry.name ? `<div class="entity">${escapeHtml(entry.name)}</div>` : ''
             return `
