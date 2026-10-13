@@ -12,3 +12,10 @@ CONF_ENTITIES = "entities"
 CONF_EXCLUDE = "exclude"
 
 CONF_RAINBIRD_RECONNECT = "rainbird_reconnect"
+
+CONF_IRRIGATION = "irrigation"
+
+# What a platform was loaded for: several features share the switch and sensor
+# platforms, and each discovery call says which one it is setting up.
+DISCOVERY_KIND = "kind"
+KIND_IRRIGATION = "irrigation"

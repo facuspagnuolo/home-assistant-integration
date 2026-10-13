@@ -28,12 +28,16 @@ from .const import (
     CONF_DEVICES,
     CONF_ENTITIES,
     CONF_EXCLUDE,
+    CONF_IRRIGATION,
     CONF_RAINBIRD_RECONNECT,
     CONF_UNIT_ID,
     CONF_WEBHOOK_SECRET,
+    DISCOVERY_KIND,
     DOMAIN,
+    KIND_IRRIGATION,
 )
 from .heartbeat import HeartbeatReporter
+from .irrigation import DATA_IRRIGATION, IRRIGATION_SCHEMA, AnnikaIrrigation
 from .rainbird import RainbirdReconnector
 from .send_event import async_send_event
 
@@ -55,6 +59,7 @@ JS_RESOURCES = (
     ("annika-remote-card.js", "/annika_static/annika-remote-card.js"),
     ("annika-alarm-card.js", "/annika_static/annika-alarm-card.js"),
     ("annika-activity-card.js", "/annika_static/annika-activity-card.js"),
+    ("annika-irrigation-card.js", "/annika_static/annika-irrigation-card.js"),
 )
 
 CONFIG_SCHEMA = vol.Schema(
@@ -67,6 +72,9 @@ CONFIG_SCHEMA = vol.Schema(
                 # Find the Rain Bird controller again when its IP changes and
                 # point the rainbird integration at it. See rainbird.py.
                 vol.Optional(CONF_RAINBIRD_RECONNECT, default=False): cv.boolean,
+                # Seasons, groups and zones of a watering schedule the person
+                # edits from annika-irrigation-card. See irrigation.py.
+                vol.Optional(CONF_IRRIGATION): IRRIGATION_SCHEMA,
                 # Physical sensors Annika wraps with an alarm participation
                 # switch. Devices can be named or given by registry id; every
                 # binary_sensor they own is picked up. See alarm.py.
@@ -194,6 +202,39 @@ async def async_setup_alarm_sensors(hass: HomeAssistant, config: ConfigType) -> 
         )
 
 
+IRRIGATION_PLATFORMS = ("switch", "number", "select", "time", "button", "sensor")
+
+
+async def async_setup_irrigation(hass: HomeAssistant, config: ConfigType) -> None:
+    """Wire up the irrigation schedule, if this unit configures one.
+
+    Starts after Home Assistant has: the zones and the rain sensor belong to
+    another integration, and the first schedule needs the restored settings,
+    which the entities only hand over once they are added.
+    """
+
+    irrigation_config = config[DOMAIN].get(CONF_IRRIGATION)
+    if not irrigation_config:
+        return
+
+    irrigation = AnnikaIrrigation(hass, irrigation_config)
+    hass.data[DATA_IRRIGATION] = irrigation
+
+    for platform in IRRIGATION_PLATFORMS:
+        hass.async_create_task(
+            async_load_platform(hass, platform, DOMAIN, {DISCOVERY_KIND: KIND_IRRIGATION}, config)
+        )
+
+    async def async_start_irrigation(_event=None) -> None:
+        await irrigation.async_start()
+
+    if hass.is_running:
+        await async_start_irrigation()
+    else:
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, async_start_irrigation)
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, irrigation.async_stop)
+
+
 async def async_setup_actor_sensor(hass: HomeAssistant, config: ConfigType) -> None:
     """Wire up actor attribution and the sensor that surfaces it.
 
@@ -301,6 +342,7 @@ async def async_setup(
 
     await async_setup_alarm_sensors(hass, config[DOMAIN])
     await async_setup_actor_sensor(hass, config)
+    await async_setup_irrigation(hass, config)
 
     heartbeat_reporter = HeartbeatReporter(hass)
     await heartbeat_reporter.async_start()
