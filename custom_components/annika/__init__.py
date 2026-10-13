@@ -30,15 +30,18 @@ from .const import (
     CONF_EXCLUDE,
     CONF_IRRIGATION,
     CONF_RAINBIRD_RECONNECT,
+    CONF_POOL_FILTER,
     CONF_UNIT_ID,
     CONF_WEBHOOK_SECRET,
     DISCOVERY_KIND,
     DOMAIN,
     KIND_IRRIGATION,
+    KIND_POOL_FILTER,
 )
 from .heartbeat import HeartbeatReporter
 from .irrigation import DATA_IRRIGATION, IRRIGATION_SCHEMA, AnnikaIrrigation
 from .rainbird import RainbirdReconnector
+from .pool_filter import DATA_POOL_FILTER, POOL_FILTER_SCHEMA, AnnikaPoolFilter
 from .send_event import async_send_event
 
 _LOGGER = logging.getLogger(__name__)
@@ -60,6 +63,7 @@ JS_RESOURCES = (
     ("annika-alarm-card.js", "/annika_static/annika-alarm-card.js"),
     ("annika-activity-card.js", "/annika_static/annika-activity-card.js"),
     ("annika-irrigation-card.js", "/annika_static/annika-irrigation-card.js"),
+    ("annika-pool-filter-card.js", "/annika_static/annika-pool-filter-card.js"),
 )
 
 CONFIG_SCHEMA = vol.Schema(
@@ -75,6 +79,9 @@ CONFIG_SCHEMA = vol.Schema(
                 # Seasons, groups and zones of a watering schedule the person
                 # edits from annika-irrigation-card. See irrigation.py.
                 vol.Optional(CONF_IRRIGATION): IRRIGATION_SCHEMA,
+                # The pool filter's seasonal timetable, edited from
+                # annika-pool-filter-card. See pool_filter.py.
+                vol.Optional(CONF_POOL_FILTER): POOL_FILTER_SCHEMA,
                 # Physical sensors Annika wraps with an alarm participation
                 # switch. Devices can be named or given by registry id; every
                 # binary_sensor they own is picked up. See alarm.py.
@@ -235,6 +242,39 @@ async def async_setup_irrigation(hass: HomeAssistant, config: ConfigType) -> Non
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, irrigation.async_stop)
 
 
+POOL_FILTER_PLATFORMS = ("switch", "number", "time", "button", "sensor")
+
+
+async def async_setup_pool_filter(hass: HomeAssistant, config: ConfigType) -> None:
+    """Wire up the pool filter's timetable, if this unit configures one.
+
+    Starts after Home Assistant has, like the irrigation: the switch belongs
+    to another integration, and the first timetable needs the restored
+    settings, which the entities only hand over once they are added.
+    """
+
+    pool_filter_config = config[DOMAIN].get(CONF_POOL_FILTER)
+    if not pool_filter_config:
+        return
+
+    pool_filter = AnnikaPoolFilter(hass, pool_filter_config)
+    hass.data[DATA_POOL_FILTER] = pool_filter
+
+    for platform in POOL_FILTER_PLATFORMS:
+        hass.async_create_task(
+            async_load_platform(hass, platform, DOMAIN, {DISCOVERY_KIND: KIND_POOL_FILTER}, config)
+        )
+
+    async def async_start_pool_filter(_event=None) -> None:
+        await pool_filter.async_start()
+
+    if hass.is_running:
+        await async_start_pool_filter()
+    else:
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, async_start_pool_filter)
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, pool_filter.async_stop)
+
+
 async def async_setup_actor_sensor(hass: HomeAssistant, config: ConfigType) -> None:
     """Wire up actor attribution and the sensor that surfaces it.
 
@@ -343,6 +383,7 @@ async def async_setup(
     await async_setup_alarm_sensors(hass, config[DOMAIN])
     await async_setup_actor_sensor(hass, config)
     await async_setup_irrigation(hass, config)
+    await async_setup_pool_filter(hass, config)
 
     heartbeat_reporter = HeartbeatReporter(hass)
     await heartbeat_reporter.async_start()

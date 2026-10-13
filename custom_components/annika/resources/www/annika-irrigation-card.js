@@ -233,7 +233,7 @@
     }
 
     async _build(attributes) {
-      const { tileConfig, headingConfig, gridConfig, HEADING_CSS } = annika()
+      const { tileConfig, headingConfig, gridConfig, HEADING_CSS, CHECKBOX_CSS, HISTORY_CSS } = annika()
       const helpers = await window.loadCardHelpers()
       const entities = attributes.entities || {}
       const color = this._config.color === undefined ? DEFAULT_COLOR : this._config.color
@@ -321,6 +321,8 @@
       this.innerHTML = `
         <style>
           ${HEADING_CSS}
+          ${CHECKBOX_CSS}
+          ${HISTORY_CSS}
           .annika-irr-top { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; align-items: start; }
           .annika-irr-top > * { min-width: 0; }
           .annika-irr-column { display: flex; flex-direction: column; gap: var(--ha-section-row-gap, 8px); }
@@ -338,7 +340,6 @@
           .annika-irr-table .name { color: var(--primary-text-color); font-weight: 500; }
           .annika-irr-table .months { color: var(--secondary-text-color); font-size: 12px; }
           .annika-irr-table .now { color: var(--primary-color); font-size: 12px; margin-left: 6px; }
-          .annika-irr-table input[type=checkbox] { width: 20px; height: 20px; margin: 0; accent-color: var(--primary-color); cursor: pointer; }
           .annika-irr-table input[type=number] {
             width: 56px; padding: 4px 6px; font: inherit; text-align: right;
             color: var(--primary-text-color); background: var(--secondary-background-color, transparent);
@@ -388,7 +389,7 @@
       this.appendChild(zonesElement)
       if (zones.length > 0) {
         const history = build(historyConfig)
-        history.classList.add('annika-irr-block')
+        history.classList.add('annika-irr-block', 'annika-history')
         this.appendChild(history)
       }
 
@@ -418,7 +419,7 @@
           const months = (season.months || []).map((m) => month.format(new Date(Date.UTC(2024, m - 1, 1)))).join(', ')
           const checks = WEEKDAYS.map((day, index) => {
             const entity = season.days && season.days[day]
-            return `<td class="day" data-label="${escapeHtml(dayNames[index])}"><input type="checkbox" data-entity="${escapeHtml(entity || '')}" aria-label="${escapeHtml(`${season.name} ${dayNames[index]}`)}" ${entity ? '' : 'disabled'}></td>`
+            return `<td class="day" data-label="${escapeHtml(dayNames[index])}"><input type="checkbox" class="annika-check" data-entity="${escapeHtml(entity || '')}" aria-label="${escapeHtml(`${season.name} ${dayNames[index]}`)}" ${entity ? '' : 'disabled'}></td>`
           }).join('')
           const minutes = groups
             .map((group, index) => {

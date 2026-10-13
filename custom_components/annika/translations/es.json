@@ -15,6 +15,13 @@
           "running": "Regando",
           "disabled": "Programa apagado"
         }
+      },
+      "pool_filter_status": {
+        "state": {
+          "idle": "En espera",
+          "running": "Prendida",
+          "disabled": "Programa apagado"
+        }
       }
     }
   }

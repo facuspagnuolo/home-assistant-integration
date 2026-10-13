@@ -15,6 +15,13 @@
           "running": "Watering",
           "disabled": "Schedule off"
         }
+      },
+      "pool_filter_status": {
+        "state": {
+          "idle": "Idle",
+          "running": "On",
+          "disabled": "Schedule off"
+        }
       }
     }
   }

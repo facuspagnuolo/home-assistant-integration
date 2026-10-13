@@ -256,6 +256,55 @@
     }
   `
 
+  // The checkbox the alarm card's sensor toggles draw (see
+  // annika-entity-toggle-feature.js), for a plain <input type="checkbox"
+  // class="annika-check"> in a card's own table: the same 22px rounded
+  // square, an empty outline when off and the card's colour with a white tick
+  // when on. Include it in the card's <style> block.
+  const CHECKBOX_CSS = `
+    .annika-check {
+      -webkit-appearance: none;
+      appearance: none;
+      box-sizing: border-box;
+      flex: none;
+      width: 22px;
+      height: 22px;
+      margin: 0;
+      padding: 0;
+      border: 2px solid var(--disabled-color);
+      border-radius: 6px;
+      background: transparent center / 15px 15px no-repeat;
+      cursor: pointer;
+      transition: background-color 150ms ease-in-out, border-color 150ms ease-in-out;
+    }
+    .annika-check:checked {
+      background-color: var(--primary-color);
+      border-color: var(--primary-color);
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23fff' d='M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z'/%3E%3C/svg%3E");
+    }
+    .annika-check:disabled {
+      cursor: default;
+      opacity: 0.4;
+    }
+    .annika-check:focus-visible {
+      outline: 2px solid var(--primary-color);
+      outline-offset: 2px;
+    }
+  `
+
+  // A history graph draws a switch that is on in amber, whatever the theme:
+  // Home Assistant's own colour for an active switch. The alarm card's graph
+  // is green (armed), so the graphs of the cards built on switches take the
+  // card colour instead. The graph reads these variables off the element it
+  // sits in, so the class goes on the history block.
+  const HISTORY_CSS = `
+    .annika-history {
+      --state-switch-on-color: var(--primary-color);
+      --state-switch-active-color: var(--primary-color);
+      --state-active-color: var(--primary-color);
+    }
+  `
+
   // Appends Home Assistant's own heading card to `host`, carrying the shared
   // class. Returns the element so the caller can keep it for hass updates.
   //   style  'title' (large, primary) | 'subtitle' (small, secondary) —
@@ -758,6 +807,8 @@
     gridConfig,
     displayName,
     HEADING_CSS,
+    CHECKBOX_CSS,
+    HISTORY_CSS,
     appendHeading,
     entityArea,
     isUserFacing,

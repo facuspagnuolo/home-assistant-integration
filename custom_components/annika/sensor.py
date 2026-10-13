@@ -31,7 +31,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
-from . import irrigation_entities
+from . import irrigation_entities, pool_filter_entities
 from .actor import (
     ATTR_ACTOR_ID,
     ATTR_ACTOR_NAME,
@@ -40,7 +40,7 @@ from .actor import (
     DATA_ACTOR,
     AnnikaLastAction,
 )
-from .const import DISCOVERY_KIND, KIND_IRRIGATION
+from .const import DISCOVERY_KIND, KIND_IRRIGATION, KIND_POOL_FILTER
 from .irrigation import DATA_IRRIGATION
 
 # What a restored state may hand back. Home Assistant also stores the entity's
@@ -72,6 +72,10 @@ async def async_setup_platform(
 
     if discovery_info.get(DISCOVERY_KIND) == KIND_IRRIGATION:
         async_add_entities(irrigation_entities.sensors(hass.data[DATA_IRRIGATION]))
+        return
+
+    if discovery_info.get(DISCOVERY_KIND) == KIND_POOL_FILTER:
+        await pool_filter_entities.async_setup_platform(hass, "sensor", async_add_entities)
         return
 
     last_action: AnnikaLastAction = hass.data[DATA_ACTOR]["last_action"]
