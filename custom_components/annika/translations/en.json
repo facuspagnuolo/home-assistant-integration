@@ -6,6 +6,13 @@
           "sunrise": "At sunrise",
           "time": "At a fixed time"
         }
+      },
+      "alarm_mode": {
+        "state": {
+          "away": "Away",
+          "night": "Night",
+          "vacation": "Vacation"
+        }
       }
     },
     "sensor": {
@@ -23,6 +30,26 @@
           "disabled": "Schedule off"
         }
       }
+    }
+  },
+  "exceptions": {
+    "invalid_code": {
+      "message": "Wrong code"
+    },
+    "locked": {
+      "message": "Too many wrong codes. Try again in a few minutes"
+    },
+    "invalid_new_code": {
+      "message": "The new code must be 4 to 8 digits"
+    },
+    "invalid_mode": {
+      "message": "Unknown alarm mode"
+    },
+    "no_rules": {
+      "message": "This alarm has no zones or outputs configured"
+    },
+    "unknown_target": {
+      "message": "Unknown zone, sensor or output"
     }
   }
 }

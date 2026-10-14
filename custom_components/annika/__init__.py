@@ -22,7 +22,10 @@ from homeassistant.loader import async_get_integration
 
 from .actor import async_setup_actor
 from .alarm import DATA_ALARM, AnnikaAlarmSensors
+from .alarm_panel import ALARM_SCHEMA, DATA_ALARM_PANEL, AnnikaAlarmPanel
+from .alarm_rules import AnnikaAlarmRules
 from .const import (
+    CONF_ALARM,
     CONF_ALARM_SENSORS,
     CONF_API_URL,
     CONF_DEVICES,
@@ -35,6 +38,7 @@ from .const import (
     CONF_WEBHOOK_SECRET,
     DISCOVERY_KIND,
     DOMAIN,
+    KIND_ALARM,
     KIND_IRRIGATION,
     KIND_POOL_FILTER,
 )
@@ -51,7 +55,6 @@ SERVICE_SEND_EVENT = "send_event"
 
 JS_RESOURCES = (
     ("annika-common.js", "/annika_static/annika-common.js"),
-    ("annika-entity-toggle-feature.js", "/annika_static/annika-entity-toggle-feature.js"),
     ("annika-ha-bridge.js", "/annika_static/annika-ha-bridge.js"),
     ("annika-automations-card.js", "/annika_static/annika-automations-card.js"),
     ("annika-lights-card.js", "/annika_static/annika-lights-card.js"),
@@ -82,6 +85,9 @@ CONFIG_SCHEMA = vol.Schema(
                 # The pool filter's seasonal timetable, edited from
                 # annika-pool-filter-card. See pool_filter.py.
                 vol.Optional(CONF_POOL_FILTER): POOL_FILTER_SCHEMA,
+                # Annika's own alarm panel: name, starting code and the time
+                # each mode takes to arm and to sound. See alarm_panel.py.
+                vol.Optional(CONF_ALARM): ALARM_SCHEMA,
                 # Physical sensors Annika wraps with an alarm participation
                 # switch. Devices can be named or given by registry id; every
                 # binary_sensor they own is picked up. See alarm.py.
@@ -275,6 +281,27 @@ async def async_setup_pool_filter(hass: HomeAssistant, config: ConfigType) -> No
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, pool_filter.async_stop)
 
 
+async def async_setup_alarm_panel(hass: HomeAssistant, config: ConfigType) -> None:
+    """Create Annika's alarm panel, if this unit configures one."""
+
+    panel_config = config[DOMAIN].get(CONF_ALARM)
+    if not panel_config:
+        return
+
+    panel = AnnikaAlarmPanel(hass, panel_config)
+    hass.data[DATA_ALARM_PANEL] = panel
+    if panel_config["zones"] or panel_config["outputs"]:
+        panel.rules = AnnikaAlarmRules(hass, panel, panel_config)
+    hass.async_create_task(
+        async_load_platform(hass, "alarm_control_panel", DOMAIN, {}, config)
+    )
+    for platform in ("switch", "time", "number", "select"):
+        hass.async_create_task(
+            async_load_platform(hass, platform, DOMAIN, {DISCOVERY_KIND: KIND_ALARM}, config)
+        )
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, panel.async_stop)
+
+
 async def async_setup_actor_sensor(hass: HomeAssistant, config: ConfigType) -> None:
     """Wire up actor attribution and the sensor that surfaces it.
 
@@ -384,6 +411,7 @@ async def async_setup(
     await async_setup_actor_sensor(hass, config)
     await async_setup_irrigation(hass, config)
     await async_setup_pool_filter(hass, config)
+    await async_setup_alarm_panel(hass, config)
 
     heartbeat_reporter = HeartbeatReporter(hass)
     await heartbeat_reporter.async_start()

@@ -75,3 +75,101 @@ send_event:
       required: false
       selector:
         object: null
+change_code:
+  name: Change alarm code
+  description: Replace the code of Annika's alarm panel. Asks for the current code.
+  target:
+    entity:
+      integration: annika
+      domain: alarm_control_panel
+  fields:
+    current_code:
+      name: Current code
+      required: true
+      selector:
+        text: null
+    new_code:
+      name: New code
+      required: true
+      selector:
+        text: null
+set_rule:
+  name: Set alarm rule
+  description: What a zone, or one of its sensors, does in a mode.
+  target:
+    entity:
+      integration: annika
+      domain: alarm_control_panel
+  fields:
+    target: {name: Target, required: true, selector: {select: {options: [zone, sensor]}}}
+    id: {name: Id, required: true, selector: {text: null}}
+    mode: {name: Mode, required: true, selector: {select: {options: [away, night, vacation]}}}
+    rule: {name: Rule, required: true, selector: {select: {options: [off, warning, trigger]}}}
+set_output:
+  name: Set alarm output
+  description: What an output does on a warning and on a trigger.
+  target:
+    entity:
+      integration: annika
+      domain: alarm_control_panel
+  fields:
+    output: {name: Output, required: true, selector: {text: null}}
+    warning_enabled: {name: On warning, selector: {boolean: null}}
+    warning_seconds: {name: Warning seconds, selector: {number: {min: 1, max: 86400}}}
+    trigger_enabled: {name: On trigger, selector: {boolean: null}}
+set_warning:
+  name: Set alarm warnings
+  description: Warnings before a trigger, and the quiet minutes that reset the count.
+  target:
+    entity:
+      integration: annika
+      domain: alarm_control_panel
+  fields:
+    limit: {name: Limit, selector: {number: {min: 1, max: 20}}}
+    window_minutes: {name: Window minutes, selector: {number: {min: 1, max: 1440}}}
+set_notification:
+  name: Set alarm notifications
+  description: Whether warnings and triggers notify the people of the house.
+  target:
+    entity:
+      integration: annika
+      domain: alarm_control_panel
+  fields:
+    warning: {name: On warning, selector: {boolean: null}}
+    trigger: {name: On trigger, selector: {boolean: null}}
+test_output:
+  name: Test alarm output
+  description: Run an output like a warning would, or send a test notification (output "notification").
+  target:
+    entity:
+      integration: annika
+      domain: alarm_control_panel
+  fields:
+    output: {name: Output, required: true, selector: {text: null}}
+set_timing:
+  name: Set alarm timing
+  description: Seconds a mode takes to arm, and seconds to disarm once something trips it.
+  target:
+    entity:
+      integration: annika
+      domain: alarm_control_panel
+  fields:
+    mode: {name: Mode, required: true, selector: {select: {options: [away, night, vacation]}}}
+    arming: {name: Arming seconds, selector: {number: {min: 0, max: 600}}}
+    pending: {name: Delay seconds, selector: {number: {min: 0, max: 600}}}
+disarm_without_code:
+  name: Disarm without code
+  description: Disarm the alarm with no code. Only exists when allow_disarm_without_code is true in the configuration.
+  target:
+    entity:
+      integration: annika
+      domain: alarm_control_panel
+arm_without_code:
+  name: Arm without code
+  description: Arm the alarm in a mode with no code. Only exists when allow_arm_without_code is true in the configuration.
+  target:
+    entity:
+      integration: annika
+      domain: alarm_control_panel
+  fields:
+    mode: {name: Mode, required: true, selector: {select: {options: [away, night, vacation]}}}

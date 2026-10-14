@@ -6,6 +6,13 @@
           "sunrise": "Al amanecer",
           "time": "A hora fija"
         }
+      },
+      "alarm_mode": {
+        "state": {
+          "away": "Afuera",
+          "night": "Noche",
+          "vacation": "Vacaciones"
+        }
       }
     },
     "sensor": {
@@ -23,6 +30,26 @@
           "disabled": "Programa apagado"
         }
       }
+    }
+  },
+  "exceptions": {
+    "invalid_code": {
+      "message": "Código incorrecto"
+    },
+    "locked": {
+      "message": "Demasiados códigos incorrectos. Probá de nuevo en unos minutos"
+    },
+    "invalid_new_code": {
+      "message": "El código nuevo debe tener de 4 a 8 dígitos"
+    },
+    "invalid_mode": {
+      "message": "Modo de alarma desconocido"
+    },
+    "no_rules": {
+      "message": "Esta alarma no tiene zonas ni salidas configuradas"
+    },
+    "unknown_target": {
+      "message": "Zona, sensor o salida desconocida"
     }
   }
 }

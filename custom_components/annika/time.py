@@ -6,8 +6,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
-from . import irrigation_entities, pool_filter_entities
-from .const import DISCOVERY_KIND, KIND_IRRIGATION, KIND_POOL_FILTER
+from . import alarm_panel_entities, irrigation_entities, pool_filter_entities
+from .const import DISCOVERY_KIND, KIND_ALARM, KIND_IRRIGATION, KIND_POOL_FILTER
 from .irrigation import DATA_IRRIGATION
 
 
@@ -23,5 +23,7 @@ async def async_setup_platform(
     if kind == KIND_IRRIGATION:
         irrigation = hass.data[DATA_IRRIGATION]
         async_add_entities([irrigation_entities.IrrigationStartTime(irrigation)])
+    elif kind == KIND_ALARM:
+        await alarm_panel_entities.async_setup_platform(hass, "time", async_add_entities)
     elif kind == KIND_POOL_FILTER:
         await pool_filter_entities.async_setup_platform(hass, "time", async_add_entities)

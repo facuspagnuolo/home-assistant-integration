@@ -15,9 +15,11 @@ CONF_RAINBIRD_RECONNECT = "rainbird_reconnect"
 
 CONF_IRRIGATION = "irrigation"
 CONF_POOL_FILTER = "pool_filter"
+CONF_ALARM = "alarm"
 
 # What a platform was loaded for: several features share the switch and sensor
 # platforms, and each discovery call says which one it is setting up.
 DISCOVERY_KIND = "kind"
 KIND_IRRIGATION = "irrigation"
 KIND_POOL_FILTER = "pool_filter"
+KIND_ALARM = "alarm"

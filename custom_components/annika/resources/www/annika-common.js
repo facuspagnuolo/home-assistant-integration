@@ -6,36 +6,6 @@
 //     name: Main Light                 # optional, overrides the friendly name
 //     icon: mdi:lamp                   # optional, overrides the default icon
 //     color: amber                     # optional, tile accent color
-//     toggle: input_boolean.x          # optional, see below
-//
-// `toggle` also accepts an object, so the control can have its own color
-// (independent of the tile's) and pick how it looks:
-//
-//     toggle:
-//       entity: input_boolean.x   # optional, defaults to the tile's entity
-//       style: checkbox           # optional, one of the four below
-//       color: green
-//
-//     inline         (default) a small checkbox pulled into the tile's own
-//                    row, so the tile stays one row tall
-//     inline-switch  Home Assistant's own ha-control-switch, positioned into
-//                    the tile's row. It is wide, so give those tiles a full
-//                    row to sit in
-//     checkbox       the same checkbox, on a row of its own below
-//     switch         Home Assistant's own toggle feature, on its own row —
-//                    the very same control a light tile gets
-//
-// `switch` on a toggle that controls the tile's own entity and asks for no
-// colour is rendered as HA's built-in `toggle` feature, not as ours: it is
-// the same thing, so there is no reason to hand-roll it. Everything else
-// needs the custom feature — the built-in one only knows about the tile's own
-// entity, always takes a row of its own, and paints itself with the tile's
-// state colour.
-//
-// `toggle: false` means no toggle at all — which is not the same as leaving
-// it out. Some cards add one by themselves (the alarm card pairs each sensor
-// with the participation switch the Annika integration made for it), and
-// `false` is how they are told not to.
 //
 // A bare entity id string is also accepted and normalized to
 // `{ entity: "<id>" }`, so both forms below are valid and can be mixed:
@@ -44,19 +14,6 @@
 //     - light.living_room_main
 //     - entity: light.kitchen
 //       name: Kitchen
-//
-// `toggle` renders a control on the tile bound to *another* entity —
-// typically an `input_boolean` helper that an automation checks to decide
-// whether it should react to this entity at all. The tile keeps showing its
-// own state; the control flips the helper. Naming no entity points it at the
-// tile's own entity instead, which is how a siren gets a switch for itself.
-// See annika-entity-toggle-feature.js.
-//
-// Note: the `checkbox` and `switch` styles add a row to the tile. On cards
-// where tiles already carry a feature (lights, covers) that makes those tiles
-// one row taller than their neighbours, so use them there only if every tile
-// in the same row has one too. The two `inline` styles do not have this
-// problem — that is what they are for.
 //
 // This module only exposes helpers on `window.Annika`, and the cards look it
 // up lazily rather than at import time — but that alone was not enough. The
@@ -71,13 +28,7 @@
 // Lovelace recovers from by itself, by waiting on `customElements.whenDefined`
 // and rebuilding.
 ;(() => {
-  const ITEM_KEYS = ['entity', 'name', 'icon', 'color', 'toggle']
-
-  // Kept in step with annika-entity-toggle-feature.js, which rejects anything
-  // else. Validated here too so a typo in a dashboard fails while the card is
-  // being configured, naming the card and the styles, instead of surfacing
-  // later as a broken tile.
-  const TOGGLE_STYLES = ['inline', 'inline-switch', 'checkbox', 'switch']
+  const ITEM_KEYS = ['entity', 'name', 'icon', 'color']
 
   // "entity_id" | { entity, ... } -> "entity_id"
   function entityId(value, cardName) {
@@ -86,49 +37,7 @@
     throw new Error(`${cardName}: expected an entity id string or an object with an "entity" key`)
   }
 
-  // The `toggle` key of an item, normalized.
-  //
-  //   false | null            -> false, meaning "no toggle", explicitly
-  //   "entity_id"             -> { entity }
-  //   { entity?, style?, color? }
-  //
-  // `entity` is optional: a toggle that names none controls the tile's own
-  // entity. `false` is returned rather than dropped so a card can tell "the
-  // user said no" apart from "the user said nothing", which is what lets the
-  // alarm card skip a sensor when auto-pairing its participation switch.
-  function normalizeToggle(value, item, cardName) {
-    if (value === false || value === null) return false
-
-    const object = typeof value === 'object' && value !== null
-    if (!object && typeof value !== 'string') {
-      throw new Error(
-        `${cardName}: "toggle" must be an entity id, false, or ` +
-          '{ entity?, style?, color? }',
-      )
-    }
-
-    const style = object ? value.style : undefined
-    if (style !== undefined && !TOGGLE_STYLES.includes(style)) {
-      throw new Error(
-        `${cardName}: "toggle.style" must be one of ${TOGGLE_STYLES.join(', ')}`,
-      )
-    }
-
-    const entity = object ? value.entity : value
-    if (entity !== undefined && typeof entity !== 'string') {
-      throw new Error(`${cardName}: "toggle.entity" must be an entity id`)
-    }
-
-    return {
-      entity,
-      style,
-      // A toggle without its own color follows the tile's color, and falls
-      // back to `primary` inside the feature.
-      color: (object ? value.color : undefined) ?? item.color,
-    }
-  }
-
-  // "entity_id" | { entity, name?, icon?, color?, toggle? } -> normalized object
+  // "entity_id" | { entity, name?, icon?, color? } -> normalized object
   function normalizeItem(item, cardName) {
     if (typeof item === 'string') {
       return { entity: item }
@@ -138,67 +47,28 @@
       for (const key of ITEM_KEYS) {
         if (item[key] !== undefined) normalized[key] = item[key]
       }
-      if (normalized.toggle !== undefined) {
-        normalized.toggle = normalizeToggle(normalized.toggle, normalized, cardName)
-      }
       return normalized
     }
     throw new Error(
       `${cardName}: every entry must be an entity id string or an object with an "entity" key ` +
-        '({ entity, name?, icon?, color?, toggle? })',
+        '({ entity, name?, icon?, color? })',
     )
   }
 
   function normalizeItems(items, cardName, key = 'entities') {
     if (!Array.isArray(items)) {
       throw new Error(
-        `${cardName}: "${key}" must be a list of entity ids or { entity, name?, icon?, color?, toggle? } objects`,
+        `${cardName}: "${key}" must be a list of entity ids or { entity, name?, icon?, color? } objects`,
       )
     }
     return items.map((item) => normalizeItem(item, cardName))
   }
 
-  // The feature config for an item's `toggle`.
-  //
-  // Home Assistant's own `toggle` feature is used wherever it can be, so a
-  // siren ends up with the exact control a light has — same element, same
-  // behaviour, none of our code in the way. It only fits when all three of
-  // these hold, and each rules it out for a real reason:
-  //
-  //   - the control is for the tile's own entity. The native feature has no
-  //     concept of a second entity, which is the whole reason the custom one
-  //     exists: an alarm sensor's tile shows the sensor while its control
-  //     flips the participation switch.
-  //   - the style is `switch`. The native feature always takes a row of its
-  //     own and that is not configurable, so nothing inline can be it. The
-  //     `inline-switch` style still renders Home Assistant's own
-  //     `ha-control-switch` — just positioned into the tile's row by us.
-  //   - no colour was asked for. The native feature paints itself with the
-  //     tile's state colour and takes no colour of its own.
-  function toggleFeature(item) {
-    const entity = item.toggle.entity || item.entity
-    const native =
-      entity === item.entity &&
-      item.toggle.style === 'switch' &&
-      item.toggle.color === undefined
-
-    if (native) return { type: 'toggle' }
-
-    return {
-      type: 'custom:annika-entity-toggle-feature',
-      entity,
-      style: item.toggle.style,
-      color: item.toggle.color,
-    }
-  }
-
   // Native HA tile card config for a normalized item. Card-level defaults
   // (features, features_position, hide_state, vertical, ...) go in `options`;
-  // the item's own entity/name/icon/color always win, and its optional
-  // `toggle` helper is appended as an extra feature row.
+  // the item's own entity/name/icon/color always win.
   function tileConfig(item, options = {}) {
     const features = [...(options.features || [])]
-    if (item.toggle) features.push(toggleFeature(item))
 
     return {
       type: 'tile',
@@ -256,8 +126,7 @@
     }
   `
 
-  // The checkbox the alarm card's sensor toggles draw (see
-  // annika-entity-toggle-feature.js), for a plain <input type="checkbox"
+  // The checkbox of the cards' tables, for a plain <input type="checkbox"
   // class="annika-check"> in a card's own table: the same 22px rounded
   // square, an empty outline when off and the card's colour with a white tick
   // when on. Include it in the card's <style> block.
@@ -407,7 +276,7 @@
   //   groups     optional list of group ids/names — restricts *and* orders
   //   include    entity ids to add even if they would be filtered out
   //   exclude    entity ids to drop, or group ids/names to drop whole
-  //   overrides  { entity_id: { name?, icon?, color?, toggle? } }
+  //   overrides  { entity_id: { name?, icon?, color? } }
   //   ungrouped  heading for entities in no group, or false to drop them
   //   categoryScope  category registry scope (defaults to the first domain)
   //
