@@ -437,7 +437,7 @@
       const w = config.warning
       const resets = this._resetsText()
       return `
-        <h3 class="sec">${escapeHtml(t.warning)}</h3>
+        <div class="sec" data-heading="${escapeHtml(t.warning)}">${escapeHtml(t.warning)}</div>
         <div class="panel">
         <div class="warning">
           <label class="field"><span>${escapeHtml(t.warnings_before)}</span>
@@ -477,7 +477,7 @@
         </tr>`)
       }
       return `
-        <h3 class="sec">${escapeHtml(t.what_fires)}</h3>
+        <div class="sec" data-heading="${escapeHtml(t.what_fires)}">${escapeHtml(t.what_fires)}</div>
         <div class="panel table"><table class="fires">
           <thead><tr><th>${escapeHtml(t.device)}</th><th>${escapeHtml(t.on_warning)}</th><th>${escapeHtml(t.on_trigger)}</th><th class="test">${escapeHtml(t.test)}</th></tr></thead>
           <tbody>${rows.join('')}</tbody></table></div>`
@@ -490,7 +490,7 @@
         <td><div class="cell"><input type="number" min="0" max="600" data-timing="${mode}" data-key="pending" value="${modes[mode].pending}"><span class="muted">${escapeHtml(t.sec)}</span></div></td>
       </tr>`).join('')
       return `
-        <h3 class="sec">${escapeHtml(t.arming)}</h3>
+        <div class="sec" data-heading="${escapeHtml(t.arming)}">${escapeHtml(t.arming)}</div>
         <div class="panel table"><table class="arming">
           <thead><tr><th></th><th title="${escapeHtml(t.arming_hint)}">${escapeHtml(t.arming_time)}</th><th title="${escapeHtml(t.delay_hint)}">${escapeHtml(t.delay_time)}</th></tr></thead>
           <tbody>${rows}</tbody></table></div>`
@@ -522,7 +522,7 @@
         }
       }
       return `
-        <h3 class="sec wide">${escapeHtml(t.zones)}</h3>
+        <div class="sec wide" data-heading="${escapeHtml(t.zones)}">${escapeHtml(t.zones)}</div>
         <div class="panel table wide"><table class="zones">
           <thead><tr><th>${escapeHtml(t.zone_sensor)}</th>${MODES.map((mode) => `<th>${escapeHtml(t['mode_' + mode])}</th>`).join('')}</tr></thead>
           <tbody>${rows.join('')}</tbody></table></div>`
@@ -556,7 +556,7 @@
         ? decisions.map((d) => `<div class="decision"><span class="level ${escapeHtml(d.level)}"></span>
             <span class="text">${escapeHtml(d.text)}</span><span class="time">${escapeHtml(this._timeText(d.time, t))}</span></div>`).join('')
         : `<div class="decision"><span class="muted">${escapeHtml(t.no_decisions)}</span></div>`
-      return `<h3 class="sec wide">${escapeHtml(t.decisions)}</h3><div class="panel decisions wide">${rows}</div>`
+      return `<div class="sec wide" data-heading="${escapeHtml(t.decisions)}">${escapeHtml(t.decisions)}</div><div class="panel decisions wide">${rows}</div>`
     }
 
     // The automatic arming and disarming: every setting is an entity the
@@ -569,7 +569,7 @@
         return value && value.includes(':') ? value.slice(0, 5) : ''
       }
       const check = (entityId) => `<input type="checkbox" class="annika-check" data-switch="${escapeHtml(entityId || '')}"${this._entityState(entityId) === 'on' ? ' checked' : ''}>`
-      let html = `<h3 class="sec wide">${escapeHtml(t.auto_title)}</h3><div class="panel auto wide">`
+      let html = `<div class="sec wide" data-heading="${escapeHtml(t.auto_title)}">${escapeHtml(t.auto_title)}</div><div class="panel auto wide">`
       if (auto.arm) {
         const a = auto.arm
         const minutes = this._entityState(a.quiet_minutes) ?? ''
@@ -638,16 +638,18 @@
           annika-alarm-card { display: block; container-type: inline-size; }
           .annika-alarm { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 4px 24px; align-items: start; }
           .annika-alarm .wide { grid-column: 1 / -1; }
-          .annika-alarm h3.sec { font-size: 18px; font-weight: 400; margin: 16px 0 8px; color: var(--primary-text-color); }
-          .annika-alarm .side h3.sec:first-child { margin-top: 0; }
+          .annika-alarm .sec { font-size: 16px; font-weight: 500; margin: 16px 0 8px; padding: 0 4px; color: var(--primary-text-color); }
+          .annika-alarm .annika-heading { display: block; }
+          .annika-alarm .side .sec:first-child { margin-top: 0; }
           .annika-alarm .arming th, .annika-alarm .arming td { width: 33%; }
-          .annika-alarm .panel { background: var(--ha-card-background, var(--card-background-color)); border-radius: var(--ha-card-border-radius, 12px);
+          .annika-alarm .panel { background: var(--ha-card-background, var(--card-background-color)); border-radius: var(--ha-card-border-radius, 0px);
+            border: var(--ha-card-border-width, 0px) solid var(--ha-card-border-color, var(--divider-color)); box-shadow: var(--ha-card-box-shadow, none);
             padding: 12px 16px; box-sizing: border-box; }
           .annika-alarm .panel.table { padding: 4px 8px; overflow-x: auto; }
           .annika-alarm .muted, .annika-alarm .sub { color: var(--secondary-text-color); font-size: 13px; }
           .annika-alarm input[type=number], .annika-alarm input[type=time], .annika-alarm select {
-            background: color-mix(in srgb, var(--primary-text-color) 6%, transparent); color: var(--primary-text-color);
-            border: 1px solid var(--divider-color); border-radius: 8px; padding: 6px 8px; font: inherit; font-size: 14px; color-scheme: dark light; }
+            background: var(--secondary-background-color, transparent); color: var(--primary-text-color);
+            border: 1px solid var(--divider-color); border-radius: 6px; padding: 4px 6px; font: inherit; font-size: 14px; color-scheme: dark light; }
           .annika-alarm input[type=number] { width: 64px; }
 
           .annika-ak { padding: 16px; display: flex; flex-direction: column; align-items: center; gap: 14px; }
@@ -756,6 +758,24 @@
         </div>
       `
       this._bind()
+      this._headings()
+    }
+
+    // Section titles are Home Assistant's own heading card, like the other
+    // Annika cards; the plain text stays until it is ready.
+    async _headings() {
+      if (!window.loadCardHelpers || !window.Annika) return
+      try {
+        const helpers = await window.loadCardHelpers()
+        for (const host of this.querySelectorAll('[data-heading]')) {
+          const card = await helpers.createCardElement(window.Annika.headingConfig(host.dataset.heading, { style: 'title' }))
+          card.hass = this._hass
+          card.classList.add('annika-heading')
+          if (host.isConnected) host.replaceChildren(card)
+        }
+      } catch (err) {
+        // The plain title stays.
+      }
     }
 
     _bind() {

@@ -173,3 +173,49 @@ arm_without_code:
       domain: alarm_control_panel
   fields:
     mode: {name: Mode, required: true, selector: {select: {options: [away, night, vacation]}}}
+set_camera_rule:
+  name: Set what a camera does
+  description: What a camera does when it detects a person, vehicle, animal or motion.
+  target:
+    entity:
+      integration: annika
+      domain: sensor
+  fields:
+    camera: {name: Camera, required: true, selector: {text: null}}
+    type: {name: Detection, required: true, selector: {select: {options: [person, vehicle, animal, motion]}}}
+    action: {name: Action, required: true, selector: {select: {options: [off, record, record_notify]}}}
+set_recording:
+  name: Set recording
+  description: Seconds recorded before and after a detection, the pause between clips, and days clips are kept.
+  target:
+    entity:
+      integration: annika
+      domain: sensor
+  fields:
+    before: {name: Seconds before, selector: {number: {min: 0, max: 60}}}
+    after: {name: Seconds after, selector: {number: {min: 1, max: 300}}}
+    cooldown: {name: Seconds between clips, selector: {number: {min: 0, max: 3600}}}
+    keep_days: {name: Days kept, selector: {number: {min: 1, max: 365}}}
+set_recording_when:
+  name: Set when to record
+  description: When detections count, by alarm state and time of day. Armed and time combine with "or".
+  target:
+    entity:
+      integration: annika
+      domain: sensor
+  fields:
+    always: {name: Always, selector: {boolean: null}}
+    armed: {name: While armed, selector: {boolean: null}}
+    armed_modes: {name: Armed modes, selector: {select: {multiple: true, options: [away, night, vacation]}}}
+    time: {name: In a time range, selector: {boolean: null}}
+    from: {name: From, selector: {time: null}}
+    to: {name: To, selector: {time: null}}
+delete_clip:
+  name: Delete clip
+  description: Delete a recorded clip and its picture.
+  target:
+    entity:
+      integration: annika
+      domain: sensor
+  fields:
+    clip_id: {name: Clip, required: true, selector: {text: null}}

@@ -23,9 +23,11 @@ from homeassistant.loader import async_get_integration
 from .actor import async_setup_actor
 from .alarm import DATA_ALARM, AnnikaAlarmSensors
 from .alarm_panel import ALARM_SCHEMA, DATA_ALARM_PANEL, AnnikaAlarmPanel
+from .cameras import CAMERAS_SCHEMA, DATA_CAMERAS, AnnikaCameras
 from .alarm_rules import AnnikaAlarmRules
 from .const import (
     CONF_ALARM,
+    CONF_CAMERAS,
     CONF_ALARM_SENSORS,
     CONF_API_URL,
     CONF_DEVICES,
@@ -39,6 +41,7 @@ from .const import (
     DISCOVERY_KIND,
     DOMAIN,
     KIND_ALARM,
+    KIND_CAMERAS,
     KIND_IRRIGATION,
     KIND_POOL_FILTER,
 )
@@ -88,6 +91,7 @@ CONFIG_SCHEMA = vol.Schema(
                 # Annika's own alarm panel: name, starting code and the time
                 # each mode takes to arm and to sound. See alarm_panel.py.
                 vol.Optional(CONF_ALARM): ALARM_SCHEMA,
+                vol.Optional(CONF_CAMERAS): CAMERAS_SCHEMA,
                 # Physical sensors Annika wraps with an alarm participation
                 # switch. Devices can be named or given by registry id; every
                 # binary_sensor they own is picked up. See alarm.py.
@@ -302,6 +306,21 @@ async def async_setup_alarm_panel(hass: HomeAssistant, config: ConfigType) -> No
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, panel.async_stop)
 
 
+async def async_setup_cameras(hass: HomeAssistant, config: ConfigType) -> None:
+    """Create Annika's cameras, if this unit configures any."""
+
+    cameras_config = config[DOMAIN].get(CONF_CAMERAS)
+    if not cameras_config:
+        return
+
+    cameras = AnnikaCameras(hass, cameras_config)
+    hass.data[DATA_CAMERAS] = cameras
+    hass.async_create_task(
+        async_load_platform(hass, "sensor", DOMAIN, {DISCOVERY_KIND: KIND_CAMERAS}, config)
+    )
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, cameras.async_stop)
+
+
 async def async_setup_actor_sensor(hass: HomeAssistant, config: ConfigType) -> None:
     """Wire up actor attribution and the sensor that surfaces it.
 
@@ -412,6 +431,7 @@ async def async_setup(
     await async_setup_irrigation(hass, config)
     await async_setup_pool_filter(hass, config)
     await async_setup_alarm_panel(hass, config)
+    await async_setup_cameras(hass, config)
 
     heartbeat_reporter = HeartbeatReporter(hass)
     await heartbeat_reporter.async_start()
