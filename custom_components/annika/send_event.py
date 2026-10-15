@@ -24,6 +24,13 @@ from .const import CONF_API_URL, CONF_UNIT_ID, CONF_WEBHOOK_SECRET, DOMAIN
 
 TIMEOUT_SECONDS = 10
 
+# `actor` value that sends the event to the unit's paired tablets only: nobody
+# gets a notification. It needs `navigate`, there is nothing else for it to do.
+ACTOR_DEVICES = "devices"
+
+# The event types that open a view; the backend requires `navigate` on them.
+EVENT_TYPES_WITH_NAVIGATE = {"security", "info"}
+
 
 class AnnikaEventClient:
     """Sign and send unit events to Annika's API."""
@@ -35,6 +42,10 @@ class AnnikaEventClient:
         """Post a signed unit event."""
 
         unit_config = self._hass.data[DOMAIN]
+        if event.get("type") in EVENT_TYPES_WITH_NAVIGATE:
+            # Annika's backend requires it on these events: a sender that does not
+            # care (the alarm, the cameras, ...) only notifies.
+            event = {**event, "navigate": bool(event.get("navigate", False))}
         body = json.dumps(event).encode()
         timestamp = str(int(time.time()))
         url = (
@@ -91,7 +102,7 @@ async def async_send_event(hass: HomeAssistant, call: ServiceCall) -> None:
         event["imageUrl"] = call.data["image_url"]
     if call.data.get("data"):
         event["data"] = call.data["data"]
-    if call.data.get("navigate"):
-        event["navigate"] = True
+    if call.data["type"] in EVENT_TYPES_WITH_NAVIGATE:
+        event["navigate"] = bool(call.data.get("navigate"))
 
     await AnnikaEventClient(hass).async_send(event)

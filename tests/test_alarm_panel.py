@@ -576,3 +576,11 @@ async def test_arm_without_code_when_allowed_arms_even_when_locked(hass):
     # Only arming was opened up: disarming still needs the code.
     with pytest.raises(Exception):
         await hass.services.async_call(DOMAIN, "disarm_without_code", {"entity_id": ENTITY}, blocking=True)
+
+
+async def test_a_bad_alarm_block_is_logged_and_skipped_not_fatal(hass, caplog):
+    from custom_components.annika import DOMAIN as D, async_setup_alarm_panel
+
+    await async_setup_alarm_panel(hass, {D: {"alarm": {"code": "abcd"}}})
+    assert DATA_ALARM_PANEL not in hass.data
+    assert "Annika alarm not started" in caplog.text

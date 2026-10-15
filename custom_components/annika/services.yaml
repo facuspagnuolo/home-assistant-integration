@@ -25,7 +25,10 @@ send_event:
         text: null
     actor:
       name: Actor
-      description: Optional alias of the person who emitted the event.
+      description: >-
+        Optional alias of the person who emitted the event. Use "devices" (with
+        navigate on) to tell only the unit's paired tablets: nobody gets a
+        notification.
       required: false
       selector:
         text: null

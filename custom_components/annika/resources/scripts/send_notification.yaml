@@ -18,6 +18,7 @@ script:
         selector:
           text: null
       actor:
+        description: Who did it. Use "devices" with navigate to tell only the tablets, with no notification.
         required: false
         selector:
           text: null

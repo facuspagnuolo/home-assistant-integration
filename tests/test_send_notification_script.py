@@ -45,3 +45,11 @@ async def test_only_notifies_by_default(hass, sent):
     await run(hass, message="Alarma desactivada", view="alarm")
 
     assert sent[0]["navigate"] is False
+
+
+async def test_devices_only_needs_navigate(hass, sent):
+    await run(hass, message="Doorbell", view="doorbell", actor="devices", navigate=True)
+    assert sent[0]["actor"] == "devices" and sent[0]["navigate"] is True
+
+    with pytest.raises(Exception):
+        await run(hass, message="Doorbell", view="doorbell", actor="devices")

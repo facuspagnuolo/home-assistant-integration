@@ -49,7 +49,7 @@ from .heartbeat import HeartbeatReporter
 from .irrigation import DATA_IRRIGATION, IRRIGATION_SCHEMA, AnnikaIrrigation
 from .rainbird import RainbirdReconnector
 from .pool_filter import DATA_POOL_FILTER, POOL_FILTER_SCHEMA, AnnikaPoolFilter
-from .send_event import async_send_event
+from .send_event import ACTOR_DEVICES, async_send_event
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -90,8 +90,10 @@ CONFIG_SCHEMA = vol.Schema(
                 vol.Optional(CONF_POOL_FILTER): POOL_FILTER_SCHEMA,
                 # Annika's own alarm panel: name, starting code and the time
                 # each mode takes to arm and to sound. See alarm_panel.py.
-                vol.Optional(CONF_ALARM): ALARM_SCHEMA,
-                vol.Optional(CONF_CAMERAS): CAMERAS_SCHEMA,
+                # Checked where each is started, not here: a mistake in one of these
+                # blocks must not stop the rest of the integration from loading.
+                vol.Optional(CONF_ALARM): dict,
+                vol.Optional(CONF_CAMERAS): dict,
                 # Physical sensors Annika wraps with an alarm participation
                 # switch. Devices can be named or given by registry id; every
                 # binary_sensor they own is picked up. See alarm.py.
@@ -136,6 +138,9 @@ EVENT_TYPES_WITHOUT_VIEW = {"system", "heartbeat"}
 def _require_view_for_customer_events(data: dict) -> dict:
     if data["type"] not in EVENT_TYPES_WITHOUT_VIEW and not data.get("view"):
         raise vol.Invalid(f"view is required for {data['type']} events")
+    if data.get("actor") == ACTOR_DEVICES and not data.get("navigate"):
+        # Only the tablets are told, and only navigate tells them: it would do nothing.
+        raise vol.Invalid(f"actor {ACTOR_DEVICES} needs navigate: true")
     return data
 
 
@@ -291,6 +296,11 @@ async def async_setup_alarm_panel(hass: HomeAssistant, config: ConfigType) -> No
     panel_config = config[DOMAIN].get(CONF_ALARM)
     if not panel_config:
         return
+    try:
+        panel_config = ALARM_SCHEMA(panel_config)
+    except vol.Invalid as error:
+        _LOGGER.error("Annika alarm not started, invalid configuration: %s", error)
+        return
 
     panel = AnnikaAlarmPanel(hass, panel_config)
     hass.data[DATA_ALARM_PANEL] = panel
@@ -311,6 +321,11 @@ async def async_setup_cameras(hass: HomeAssistant, config: ConfigType) -> None:
 
     cameras_config = config[DOMAIN].get(CONF_CAMERAS)
     if not cameras_config:
+        return
+    try:
+        cameras_config = CAMERAS_SCHEMA(cameras_config)
+    except vol.Invalid as error:
+        _LOGGER.error("Annika cameras not started, invalid configuration: %s", error)
         return
 
     cameras = AnnikaCameras(hass, cameras_config)
