@@ -15,6 +15,11 @@ annika-alarm-card.
           night:    {arming: 10, pending: 15}
           vacation: {arming: 30, pending: 30}
 
+Only the modes listed under `modes` exist: leave one out and the card shows no
+button, timing, rule column or choice for it, and it cannot be armed. Listing
+none gives all three with their default timings. `away:` with nothing under it
+is a mode with the defaults.
+
 It can also arm and disarm itself:
 
         auto_arm:
@@ -129,7 +134,7 @@ def _clock(value) -> dt_time:
 
 AUTO_ARM_SCHEMA = vol.Schema(
     {
-        vol.Optional("mode", default="night"): vol.In(MODES),
+        vol.Optional("mode"): vol.In(MODES),
         vol.Required("time"): _clock,
         vol.Optional("quiet_minutes", default=0): vol.All(
             vol.Coerce(int), vol.Range(min=0, max=240)
@@ -140,12 +145,38 @@ AUTO_ARM_SCHEMA = vol.Schema(
 
 AUTO_DISARM_SCHEMA = vol.Schema(
     {
-        vol.Optional("mode", default="night"): vol.In(MODES),
+        vol.Optional("mode"): vol.In(MODES),
         vol.Required("time"): _clock,
     }
 )
 
-ALARM_SCHEMA = vol.Schema(
+def _mode_block(mode: str):
+    """`away:` with nothing under it is a mode with the default timings."""
+
+    return vol.All(lambda value: {} if value is None else value, _mode_schema(mode))
+
+
+def _enabled_modes(config: dict) -> dict:
+    """Keep the modes the YAML lists (all three when it lists none), and check the
+    automatic arming and disarming use one of them."""
+
+    if not config["modes"]:
+        config["modes"] = {mode: _mode_schema(mode)({}) for mode in MODES}
+    enabled = [mode for mode in MODES if mode in config["modes"]]
+    for key, label in (("auto_arm", "auto_arm"), ("auto_disarm", "auto_disarm")):
+        block = config.get(key)
+        if block is None:
+            continue
+        if "mode" not in block:
+            block["mode"] = "night" if "night" in enabled else enabled[0]
+        elif block["mode"] not in enabled:
+            raise vol.Invalid(
+                f"{label}.mode is {block['mode']}, which is not one of the alarm's modes ({', '.join(enabled)})"
+            )
+    return config
+
+
+ALARM_SCHEMA = vol.All(vol.Schema(
     {
         vol.Optional("name", default="Home Alarm"): cv.string,
         vol.Required("code"): _code,
@@ -158,11 +189,13 @@ ALARM_SCHEMA = vol.Schema(
         # Same for arming: annika.arm_without_code takes a mode and no code.
         vol.Optional("allow_arm_without_code", default=False): cv.boolean,
         **RULES_SCHEMA,
+        # Only the modes listed here exist: the card shows no button, column or choice
+        # for the others. Listing none gives all three, with their default timings.
         vol.Optional("modes", default={}): vol.Schema(
-            {vol.Optional(mode, default={}): _mode_schema(mode) for mode in MODES}
+            {vol.Optional(mode): _mode_block(mode) for mode in MODES}
         ),
     }
-)
+), _enabled_modes)
 
 
 class CodeError(Exception):
@@ -186,8 +219,12 @@ class AnnikaAlarmPanel:
         self.allow_disarm_without_code: bool = config["allow_disarm_without_code"]
         self.allow_arm_without_code: bool = config["allow_arm_without_code"]
         self._initial_code: str = config["code"]
-        self.modes: dict[str, dict[str, int]] = {
-            mode: dict(config["modes"][mode]) for mode in MODES
+        # The modes that exist, with their timings and whether the person left them
+        # enabled from the card. A disabled mode cannot be armed and the card hides it.
+        self.modes: dict[str, dict] = {
+            mode: {**config["modes"][mode], "enabled": True}
+            for mode in MODES
+            if mode in config["modes"]
         }
         auto_arm = config.get("auto_arm")
         auto_disarm = config.get("auto_disarm")
@@ -242,6 +279,16 @@ class AnnikaAlarmPanel:
                 for key in ("arming", "pending"):
                     if isinstance(timing.get(key), int) and 0 <= timing[key] <= MAX_SECONDS:
                         self.modes[mode][key] = timing[key]
+        stored_enabled = {
+            mode: timing["enabled"]
+            for mode, timing in data.get("modes", {}).items()
+            if mode in self.modes and isinstance(timing.get("enabled"), bool)
+        }
+        # Never leave the panel with nothing to arm in.
+        if any(stored_enabled.get(mode, True) for mode in self.modes):
+            for mode, value in stored_enabled.items():
+                self.modes[mode]["enabled"] = value
+        self._fix_auto_modes()
         stored = data.get("hash")
         self._code_is_initial = data.get("initial", True)
         if stored and not self._code_is_initial:
@@ -277,7 +324,7 @@ class AnnikaAlarmPanel:
             return
         if state == STATE_DISARMED:
             self.state = STATE_DISARMED
-        elif mode in MODES:
+        elif mode in self.enabled_modes:
             self.mode = mode
             self.state = state
             self.deadline = deadline
@@ -375,6 +422,38 @@ class AnnikaAlarmPanel:
             "modes": self.modes,
         }
 
+    @property
+    def enabled_modes(self) -> list[str]:
+        """The modes that can be armed, in the usual order."""
+
+        return [mode for mode in MODES if mode in self.modes and self.modes[mode]["enabled"]]
+
+    def _fix_auto_modes(self) -> None:
+        """Automatic arming and disarming only name an enabled mode."""
+
+        enabled = self.enabled_modes
+        fallback = "night" if "night" in enabled else enabled[0]
+        if self.auto_arm_mode not in enabled:
+            self.auto_arm_mode = fallback
+        if self.auto_disarm_mode not in enabled:
+            self.auto_disarm_mode = fallback
+
+    def set_mode_enabled(self, mode: str, enabled: bool) -> None:
+        """Turn a mode on or off. The last enabled mode cannot be turned off; a panel
+        armed in a mode being turned off is disarmed."""
+
+        if mode not in self.modes:
+            raise CodeError("invalid_mode")
+        if not enabled and self.enabled_modes == [mode]:
+            raise CodeError("last_mode")
+        self.modes[mode]["enabled"] = enabled
+        if not enabled:
+            self._fix_auto_modes()
+            if self.mode == mode and self.state != STATE_DISARMED:
+                self.disarm(skip_code=True)
+        self._store.async_delay_save(self._data, 1)
+        self.notify_listeners()
+
     def set_timing(self, mode: str, arming: int | None = None, pending: int | None = None) -> None:
         """How long a mode takes to arm and how long the person has once it trips.
 
@@ -382,7 +461,7 @@ class AnnikaAlarmPanel:
         down keeps the deadline it was given.
         """
 
-        if mode not in MODES:
+        if mode not in self.modes:
             raise CodeError("invalid_mode")
         if arming is not None:
             self.modes[mode]["arming"] = arming
@@ -400,7 +479,7 @@ class AnnikaAlarmPanel:
     # --- commands -----------------------------------------------------------
 
     def arm(self, mode: str, code: str | None = None, *, skip_code: bool = False) -> None:
-        if mode not in MODES:
+        if mode not in self.enabled_modes:
             raise CodeError("invalid_mode")
         if not skip_code:
             self.check_code(code)

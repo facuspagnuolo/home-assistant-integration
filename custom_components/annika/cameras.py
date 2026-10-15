@@ -20,6 +20,19 @@ not a thing of its own: a detection that is not recorded is not notified.
             vehicle: binary_sensor.e1_outdoor_se_poe_vehicle
             rules: {person: record_notify, vehicle: record}
 
+Cameras can be grouped. A camera names its `group`, and the group sets what its
+cameras do for each detection; a camera inherits it unless it has a rule of its
+own for that detection (the way a sensor inherits its zone's rule in the alarm):
+
+        groups:                                  # optional: where a group starts
+          - name: Garden
+            rules: {person: record_notify, vehicle: record}
+        cameras:
+          - {name: Camera 1, entity: ..., person: ..., vehicle: ..., group: Garden}
+          - {name: Camera 2, entity: ..., person: ..., group: Garden, rules: {person: record}}
+
+A group named only by its cameras starts at "off".
+
 Every detection of an allowed kind records `before` seconds before it and
 `after` seconds after, takes a snapshot of it (the clip's picture, and the
 notification's), and at most once per camera every `cooldown` seconds, so a
@@ -98,6 +111,14 @@ CAMERA_SCHEMA = vol.Schema(
         vol.Required("name"): cv.string,
         vol.Required("entity"): cv.entity_id,
         **{vol.Optional(kind): cv.entity_id for kind in DETECTIONS},
+        vol.Optional("group"): cv.string,
+        vol.Optional("rules", default={}): vol.Schema({vol.Optional(kind): _ACTION for kind in DETECTIONS}),
+    }
+)
+
+GROUP_SCHEMA = vol.Schema(
+    {
+        vol.Required("name"): cv.string,
         vol.Optional("rules", default={}): vol.Schema({vol.Optional(kind): _ACTION for kind in DETECTIONS}),
     }
 )
@@ -126,26 +147,33 @@ CAMERAS_SCHEMA = vol.Schema(
                 vol.Optional("to", default="06:00"): _clock,
             }
         ),
+        vol.Optional("groups", default=[]): vol.All(cv.ensure_list, [GROUP_SCHEMA]),
         vol.Required("cameras"): vol.All(cv.ensure_list, [CAMERA_SCHEMA], vol.Length(min=1)),
     }
 )
 
 TEXTS = {
     "en": {
-        "title": "{camera}: {kind} detected",
-        "kind_person": "person",
-        "kind_vehicle": "vehicle",
-        "kind_animal": "animal",
-        "kind_motion": "motion",
+        "title_person": "👤 Person detected",
+        "title_vehicle": "🚗 Vehicle detected",
+        "title_animal": "🐾 Animal detected",
+        "title_motion": "🏃 Motion detected",
     },
     "es": {
-        "title": "{camera}: {kind} detectada",
-        "kind_person": "persona",
-        "kind_vehicle": "vehículo",
-        "kind_animal": "animal",
-        "kind_motion": "movimiento",
+        "title_person": "👤 Persona detectada",
+        "title_vehicle": "🚗 Vehículo detectado",
+        "title_animal": "🐾 Animal detectado",
+        "title_motion": "🏃 Movimiento detectado",
     },
 }
+
+
+class _Group:
+    def __init__(self, name: str, rules: dict[str, str]) -> None:
+        self.id = slug(name)
+        self.name = name
+        self.rules: dict[str, str] = {kind: rules.get(kind, "off") for kind in DETECTIONS}
+        self.kinds: list[str] = []
 
 
 class _Camera:
@@ -154,7 +182,11 @@ class _Camera:
         self.name = config["name"]
         self.entity: str = config["entity"]
         self.sensors: dict[str, str] = {kind: config[kind] for kind in DETECTIONS if kind in config}
-        self.rules: dict[str, str] = {kind: config["rules"].get(kind, "off") for kind in self.sensors}
+        self.group_id: str | None = slug(config["group"]) if config.get("group") else None
+        # None: follows the group. A camera with no group always has a rule of its own.
+        self.rules: dict[str, str | None] = {
+            kind: config["rules"].get(kind, None if self.group_id else "off") for kind in self.sensors
+        }
 
 
 def in_range(now: time, start: time, end: time) -> bool:
@@ -181,6 +213,7 @@ class AnnikaCameras:
         self.keep_days: int = recording["keep_days"]
         self.when: dict[str, Any] = dict(config["when"])
         self.cameras = [_Camera(camera) for camera in config["cameras"]]
+        self.groups = self._build_groups(config)
         self.clips: list[dict] = []
 
         self._last: dict[str, datetime] = {}
@@ -192,6 +225,31 @@ class AnnikaCameras:
         for camera in self.cameras:
             for kind, entity_id in camera.sensors.items():
                 self._by_entity.setdefault(entity_id, []).append((camera, kind))
+
+    def _build_groups(self, config: dict) -> list[_Group]:
+        """The groups the YAML lists, plus any a camera names that it does not."""
+
+        groups: dict[str, _Group] = {}
+        for group in config.get("groups", []):
+            groups[slug(group["name"])] = _Group(group["name"], group["rules"])
+        for camera, raw in zip(self.cameras, config["cameras"]):
+            if camera.group_id and camera.group_id not in groups:
+                groups[camera.group_id] = _Group(raw["group"], {})
+            if camera.group_id:
+                group = groups[camera.group_id]
+                group.kinds.extend(kind for kind in camera.sensors if kind not in group.kinds)
+        for group in groups.values():
+            group.kinds.sort(key=DETECTIONS.index)
+        return list(groups.values())
+
+    def action_for(self, camera: _Camera, kind: str) -> str:
+        """What the camera does for this detection: its own rule, else its group's."""
+
+        action = camera.rules.get(kind)
+        if action is not None:
+            return action
+        group = next((g for g in self.groups if g.id == camera.group_id), None)
+        return group.rules.get(kind, "off") if group else "off"
 
     # --- lifecycle ----------------------------------------------------------
 
@@ -239,8 +297,14 @@ class AnnikaCameras:
         for camera_id, rules in saved.get("rules", {}).items():
             if (camera := by_id.get(camera_id)) is not None:
                 for kind, action in rules.items():
-                    if kind in camera.rules and action in ACTIONS:
+                    if kind in camera.rules and (action in ACTIONS or (action is None and camera.group_id)):
                         camera.rules[kind] = action
+        groups = {group.id: group for group in self.groups}
+        for group_id, rules in saved.get("groups", {}).items():
+            if (group := groups.get(group_id)) is not None:
+                for kind, action in rules.items():
+                    if kind in group.rules and action in ACTIONS:
+                        group.rules[kind] = action
         self.clips = saved.get("clips", [])[:MAX_CLIPS]
 
     def _saved(self) -> dict[str, Any]:
@@ -256,6 +320,7 @@ class AnnikaCameras:
                 for key, value in self.when.items()
             },
             "rules": {camera.id: dict(camera.rules) for camera in self.cameras},
+            "groups": {group.id: dict(group.rules) for group in self.groups},
             "clips": self.clips,
         }
 
@@ -263,11 +328,25 @@ class AnnikaCameras:
         self._store.async_delay_save(self._saved, 2)
         self.notify()
 
-    def set_rule(self, camera_id: str, kind: str, action: str) -> None:
+    def set_rule(self, camera_id: str, kind: str, action: str | None) -> None:
+        """A camera's own rule; None gives it back to its group."""
+
         camera = next((c for c in self.cameras if c.id == camera_id), None)
-        if camera is None or kind not in camera.sensors or action not in ACTIONS:
+        if camera is None or kind not in camera.sensors:
             raise ValueError("unknown camera or detection")
+        if action is None:
+            if not camera.group_id:
+                raise ValueError("a camera with no group has no rule to inherit")
+        elif action not in ACTIONS:
+            raise ValueError("unknown action")
         camera.rules[kind] = action
+        self._changed()
+
+    def set_group_rule(self, group_id: str, kind: str, action: str) -> None:
+        group = next((g for g in self.groups if g.id == group_id), None)
+        if group is None or kind not in group.kinds or action not in ACTIONS:
+            raise ValueError("unknown group or detection")
+        group.rules[kind] = action
         self._changed()
 
     def set_recording(self, **values) -> None:
@@ -329,7 +408,7 @@ class AnnikaCameras:
             self._detected(camera, kind)
 
     def _detected(self, camera: _Camera, kind: str) -> None:
-        action = camera.rules.get(kind, "off")
+        action = self.action_for(camera, kind)
         if action == "off" or not self.allowed():
             return
         now = dt_util.utcnow()
@@ -410,16 +489,21 @@ class AnnikaCameras:
 
     async def _send(self, camera: _Camera, kind: str, image: str | None) -> None:
         if not self.notify_view:
+            _LOGGER.warning(
+                "Annika cameras: %s is set to record and notify but notify_view is not configured; no notification sent",
+                camera.name,
+            )
             return
         event = {
             "eventId": str(uuid.uuid4()),
             "type": "info",
-            "title": self._text("title", camera=camera.name, kind=self._text(f"kind_{kind}")),
-            "message": "",
+            "title": self._text(f"title_{kind}"),
+            # The API rejects an empty message: the camera's name says where.
+            "message": camera.name,
             "view": self.notify_view,
         }
         if image and self.image_base:
-            event["image_url"] = f"{self.image_base}/{image}"
+            event["imageUrl"] = f"{self.image_base}/{image}"
         try:
             await AnnikaEventClient(self.hass).async_send(event)
         except Exception:  # noqa: BLE001 — a missed notification must not stop the recording
@@ -494,9 +578,14 @@ class AnnikaCameras:
                     "to": self.when["to"].strftime("%H:%M"),
                 },
                 "notification": bool(self.notify_view),
+                "groups": [
+                    {"id": group.id, "name": group.name, "kinds": group.kinds, "rules": group.rules}
+                    for group in self.groups
+                ],
                 "cameras": [
                     {
                         "id": camera.id,
+                        "group": camera.group_id,
                         "name": camera.name,
                         "entity": camera.entity,
                         "sensors": camera.sensors,

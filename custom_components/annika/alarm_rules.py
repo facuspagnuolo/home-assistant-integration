@@ -8,7 +8,7 @@ sensors, is either `off`, a `warning` or a `trigger`:
     annika:
       alarm:
         warning: {limit: 3, window_minutes: 30}
-        notification: {view: alarm, warning: true, trigger: true}
+        notification: {view: alarm, warning: true, trigger: true, trigger_repeat: 5}
         outputs:
           - name: Sirens
             entities: [switch.sirenas]
@@ -60,6 +60,7 @@ from homeassistant.helpers.event import (
     async_call_later,
     async_track_point_in_time,
     async_track_state_change_event,
+    async_track_time_interval,
 )
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
@@ -148,6 +149,14 @@ RULES_SCHEMA = {
             vol.Optional("view"): vol.All(cv.string, vol.Match(r"^[\w-]+$")),
             vol.Optional("warning", default=True): cv.boolean,
             vol.Optional("trigger", default=True): cv.boolean,
+            # Tell the house when the alarm is disarmed, and by whom when the app knows.
+            # Follows the trigger switch: whoever turned those notifications off hears none.
+            vol.Optional("disarm", default=True): cv.boolean,
+            # While the alarm stays triggered, send the notification again every this
+            # many seconds. 0 sends it once.
+            vol.Optional("trigger_repeat", default=0): vol.All(
+                vol.Coerce(int), vol.Range(min=0, max=3600)
+            ),
         }
     ),
     vol.Optional("outputs", default=[]): vol.All(cv.ensure_list, [OUTPUT_SCHEMA]),
@@ -169,8 +178,13 @@ TEXTS = {
         "ignored": "{sensor} · {mode} · ignored: off in {mode}",
         "triggered": "Alarm triggered",
         "disarmed": "Disarmed: counter reset, outputs off",
-        "title_warning": "Alarm warning",
-        "title_trigger": "Alarm triggered",
+        "title_warning": "⚠️ Alarm warning",
+        "title_trigger": "🚨 Alarm triggered",
+        "title_disarmed": "🔓 Alarm disarmed",
+        "notify_warning": "{sensor} - warning {n} of {limit}",
+        "notify_reminder": "Reminder #{n}",
+        "notify_disarmed_by": "Disarmed by {actor}",
+        "notify_disarmed": "Disarmed",
         "title_test": "Alarm notification test",
         "message_test": "This is a test of the alarm notifications",
         "expired": "No detections for {minutes} min: warning counter reset",
@@ -187,8 +201,13 @@ TEXTS = {
         "ignored": "{sensor} · {mode} · ignorado: apagado en {mode}",
         "triggered": "Alarma disparada",
         "disarmed": "Desarmada: contador en cero, salidas apagadas",
-        "title_warning": "Aviso de alarma",
-        "title_trigger": "Alarma disparada",
+        "title_warning": "⚠️ Aviso de alarma",
+        "title_trigger": "🚨 Alarma disparada",
+        "title_disarmed": "🔓 Alarma desactivada",
+        "notify_warning": "{sensor} - aviso {n} de {limit}",
+        "notify_reminder": "Recordatorio #{n}",
+        "notify_disarmed_by": "Desactivada por {actor}",
+        "notify_disarmed": "Desactivada",
         "title_test": "Prueba de notificación de la alarma",
         "message_test": "Esta es una prueba de las notificaciones de la alarma",
         "expired": "Sin detecciones por {minutes} min: contador de avisos en cero",
@@ -245,6 +264,10 @@ class AnnikaAlarmRules:
         self.notify_view: str | None = notification.get("view")
         self.notify_warning: bool = notification["warning"]
         self.notify_trigger: bool = notification["trigger"]
+        self.trigger_repeat: int = notification["trigger_repeat"]
+        self.notify_disarm: bool = notification["disarm"]
+        self._cancel_repeat: Callable[[], None] | None = None
+        self._reminders = 0
         self.zones = [_Zone(zone) for zone in config["zones"]]
         self.outputs = [_Output(output) for output in config["outputs"]]
         self.decisions: list[dict] = []
@@ -278,6 +301,7 @@ class AnnikaAlarmRules:
             self._cancel_sensors()
         if self._cancel_expiry is not None:
             self._cancel_expiry()
+        self._stop_repeat()
         for output in self.outputs:
             if output.cancel is not None:
                 output.cancel()
@@ -293,6 +317,9 @@ class AnnikaAlarmRules:
         notify = saved.get("notification", {})
         self.notify_warning = notify.get("warning", self.notify_warning)
         self.notify_trigger = notify.get("trigger", self.notify_trigger)
+        repeat = notify.get("trigger_repeat")
+        if isinstance(repeat, int) and 0 <= repeat <= 3600:
+            self.trigger_repeat = repeat
         by_id = {output.id: output for output in self.outputs}
         for output_id, values in saved.get("outputs", {}).items():
             if (output := by_id.get(output_id)) is None:
@@ -317,7 +344,11 @@ class AnnikaAlarmRules:
     def _saved(self) -> dict[str, Any]:
         return {
             "warning": {"limit": self.limit, "window_minutes": self.window_minutes},
-            "notification": {"warning": self.notify_warning, "trigger": self.notify_trigger},
+            "notification": {
+                "warning": self.notify_warning,
+                "trigger": self.notify_trigger,
+                "trigger_repeat": self.trigger_repeat,
+            },
             "outputs": {
                 output.id: {
                     "warning_enabled": output.warning_enabled,
@@ -377,11 +408,22 @@ class AnnikaAlarmRules:
         self._reschedule_expiry()
         self._changed()
 
-    def set_notification(self, warning: bool | None = None, trigger: bool | None = None) -> None:
+    def set_notification(
+        self,
+        warning: bool | None = None,
+        trigger: bool | None = None,
+        trigger_repeat: int | None = None,
+    ) -> None:
         if warning is not None:
             self.notify_warning = warning
         if trigger is not None:
             self.notify_trigger = trigger
+        if trigger_repeat is not None:
+            self.trigger_repeat = trigger_repeat
+        if self.panel.state == "triggered":
+            # Take the new setting for a trigger already going on.
+            self._stop_repeat()
+            self._start_repeat()
         self._changed()
 
     # --- detections ---------------------------------------------------------
@@ -436,11 +478,11 @@ class AnnikaAlarmRules:
             ),
         )
         if self.notify_warning:
-            self._send(self._text("title_warning"), self._decisions_text())
+            self._send(
+                self._text("title_warning"),
+                self._text("notify_warning", sensor=sensor.name, n=self.count, limit=self.limit),
+            )
         self.panel.notify_listeners()
-
-    def _decisions_text(self) -> str:
-        return self.decisions[0]["text"] if self.decisions else ""
 
     @property
     def resets_at(self) -> datetime | None:
@@ -471,13 +513,18 @@ class AnnikaAlarmRules:
         previous, self._last_state = self._last_state, new
         if previous is None or previous == new:
             return
+        if new != "triggered":
+            self._stop_repeat()
         if new == "triggered":
             self._decide("trigger", self._text("triggered"))
             for output in self.outputs:
                 if output.trigger_enabled:
                     self._switch_on(output, None)
+            self._reminders = 0
             if self.notify_trigger:
-                self._send(self._text("title_trigger"), self._text("triggered"))
+                self._reminders = 1
+                self._send(self._text("title_trigger"), self._text("notify_reminder", n=1))
+                self._start_repeat()
         elif new == "disarmed":
             self.count = 0
             self.last_detection = None
@@ -487,6 +534,14 @@ class AnnikaAlarmRules:
                 self._switch_off(output)
             if previous != "disarmed" and (had_outputs or previous in ("triggered", "pending")):
                 self._decide("info", self._text("disarmed"))
+            if self.notify_disarm and self.notify_trigger and previous not in ("disarmed", "arming"):
+                actor = self._disarmed_by()
+                message = (
+                    self._text("notify_disarmed_by", actor=actor)
+                    if actor
+                    else self._text("notify_disarmed")
+                )
+                self._send(self._text("title_disarmed"), message)
 
     # --- outputs ------------------------------------------------------------
 
@@ -563,6 +618,48 @@ class AnnikaAlarmRules:
             )
         self.panel.notify_listeners()
 
+    def _disarmed_by(self) -> str | None:
+        """The Annika app user who just disarmed the panel, when the app said so.
+
+        The app stamps the call (see actor.py) and the stamp is claimed when the call
+        starts, before the panel moves: that record is the one to read. A keypad, an
+        automation or the auto-disarm leave no stamp, and then nobody is named.
+        """
+
+        last = (self.hass.data.get(f"{DOMAIN}_actor") or {}).get("last_action")
+        action = last.action if last is not None else None
+        if action is None or action.domain != "alarm_control_panel":
+            return None
+        if not action.service.startswith("alarm_disarm"):
+            return None
+        if self.panel.entity_id and self.panel.entity_id not in action.entity_ids:
+            return None
+        if (dt_util.utcnow() - action.at).total_seconds() > 15:
+            return None
+        return action.actor.name
+
+    def _start_repeat(self) -> None:
+        """Notify again every `trigger_repeat` seconds for as long as the alarm is triggered."""
+
+        if self._cancel_repeat is not None or not self.trigger_repeat or not self.notify_trigger:
+            return
+        self._cancel_repeat = async_track_time_interval(
+            self.hass, self._repeat_trigger, timedelta(seconds=self.trigger_repeat)
+        )
+
+    def _stop_repeat(self) -> None:
+        if self._cancel_repeat is not None:
+            self._cancel_repeat()
+            self._cancel_repeat = None
+
+    @callback
+    def _repeat_trigger(self, _now) -> None:
+        if self.panel.state != "triggered" or not self.notify_trigger:
+            self._stop_repeat()
+            return
+        self._reminders += 1
+        self._send(self._text("title_trigger"), self._text("notify_reminder", n=self._reminders))
+
     def _send(self, title: str, message: str) -> None:
         if not self.notify_view:
             return
@@ -597,6 +694,7 @@ class AnnikaAlarmRules:
                     "enabled": bool(self.notify_view),
                     "warning": self.notify_warning,
                     "trigger": self.notify_trigger,
+                    "trigger_repeat": self.trigger_repeat,
                     "view": self.notify_view,
                 },
                 "outputs": [

@@ -379,13 +379,15 @@ async def test_notifications_follow_their_switches(hass, events):
     detect(hass, CAM1)
     await hass.async_block_till_done()
     sent = [c.args[0] for c in events.call_args_list]
-    assert sent[0]["title"] == "Alarm warning" and sent[0]["view"] == "alarm"
-    assert sent[0]["message"].startswith("Camera 1 · away · warning 1 of 3")
+    assert sent[0]["title"] == "⚠️ Alarm warning" and sent[0]["view"] == "alarm"
+    assert sent[0]["message"] == "Camera 1 - warning 1 of 3"
     detect(hass, OFFICE)
     await hass.async_block_till_done()
-    assert events.call_args_list[-1].args[0]["title"] == "Alarm triggered"
-    events.reset_mock()
+    assert events.call_args_list[-1].args[0]["title"] == "🚨 Alarm triggered"
+    assert events.call_args_list[-1].args[0]["message"] == "Reminder #1"
     await call(hass, "alarm_disarm", code="1234")
+    await hass.async_block_till_done()
+    events.reset_mock()
     await hass.services.async_call(
         DOMAIN, "set_notification", {"entity_id": ENTITY, "warning": False, "trigger": False}, blocking=True
     )
@@ -519,3 +521,109 @@ async def test_testing_a_running_output_again_stops_it(hass, freezer):
     on.clear()
     await advance(hass, freezer, 60)
     assert entities(off) == ["switch.sirenas"]  # the old timer is gone: no second turn_off
+
+
+def _triggered_titles(events):
+    return [c.args[0]["title"] for c in events.call_args_list if c.args[0]["title"] == "🚨 Alarm triggered"]
+
+
+async def test_the_trigger_notification_repeats_while_triggered_and_stops_on_disarm(hass, freezer, events):
+    config = {**CONFIG, "notification": {"view": "alarm", "trigger_repeat": 5}}
+    await setup_rules(hass, config)
+    await armed(hass, "away")
+    detect(hass, OFFICE)
+    detect(hass, DOOR)
+    await hass.async_block_till_done()
+    assert state(hass) == "triggered"
+    assert len(_triggered_titles(events)) == 1
+    await advance(hass, freezer, 5)
+    await advance(hass, freezer, 5)
+    assert len(_triggered_titles(events)) == 3
+    await call(hass, "alarm_disarm", code="1234")
+    await advance(hass, freezer, 30)
+    assert len(_triggered_titles(events)) == 3
+
+
+async def test_the_trigger_notification_is_sent_once_without_a_repeat(hass, freezer, events):
+    await setup_rules(hass)
+    await armed(hass, "away")
+    detect(hass, OFFICE)
+    detect(hass, DOOR)
+    await hass.async_block_till_done()
+    await advance(hass, freezer, 60)
+    assert len(_triggered_titles(events)) == 1
+
+
+async def test_the_repeat_is_edited_from_the_card_and_stored(hass, freezer, events, hass_storage):
+    panel, _on, _off = await setup_rules(hass)
+    await hass.services.async_call(
+        DOMAIN, "set_notification", {"entity_id": ENTITY, "trigger_repeat": 5}, blocking=True
+    )
+    assert hass.states.get(ENTITY).attributes["config"]["notification"]["trigger_repeat"] == 5
+    await armed(hass, "away")
+    detect(hass, OFFICE)
+    detect(hass, DOOR)
+    await hass.async_block_till_done()
+    await advance(hass, freezer, 5)
+    assert len(_triggered_titles(events)) == 2
+
+
+def _messages(events, title):
+    return [c.args[0]["message"] for c in events.call_args_list if c.args[0]["title"] == title]
+
+
+async def test_the_reminders_are_numbered(hass, freezer, events):
+    config = {**CONFIG, "notification": {"view": "alarm", "trigger_repeat": 5}}
+    await setup_rules(hass, config)
+    await armed(hass, "away")
+    detect(hass, OFFICE)
+    detect(hass, DOOR)
+    await hass.async_block_till_done()
+    await advance(hass, freezer, 5)
+    await advance(hass, freezer, 5)
+    assert _messages(events, "🚨 Alarm triggered") == ["Reminder #1", "Reminder #2", "Reminder #3"]
+
+
+async def test_disarming_says_who_when_the_app_stamped_the_call(hass, events):
+    from custom_components.annika.actor import Actor, async_setup_actor
+
+    await setup_rules(hass)
+    async_setup_actor(hass)
+    stamps = hass.data["annika_actor"]["stamps"]
+    await armed(hass, "away")
+    events.reset_mock()
+    stamps.stamp(Actor(name="Delfi"), "alarm_control_panel", "alarm_disarm", [ENTITY])
+    await call(hass, "alarm_disarm", code="1234")
+    await hass.async_block_till_done()
+    assert _messages(events, "🔓 Alarm disarmed") == ["Disarmed by Delfi"]
+
+
+async def test_disarming_without_a_name_just_says_disarmed(hass, events):
+    await setup_rules(hass)
+    await armed(hass, "away")
+    events.reset_mock()
+    await call(hass, "alarm_disarm", code="1234")
+    await hass.async_block_till_done()
+    assert _messages(events, "🔓 Alarm disarmed") == ["Disarmed"]
+
+
+async def test_disarming_is_not_announced_when_the_config_says_no(hass, events):
+    config = {**CONFIG, "notification": {"view": "alarm", "disarm": False}}
+    await setup_rules(hass, config)
+    await armed(hass, "away")
+    events.reset_mock()
+    await call(hass, "alarm_disarm", code="1234")
+    await hass.async_block_till_done()
+    assert _messages(events, "🔓 Alarm disarmed") == []
+
+
+async def test_the_spanish_texts(hass, events):
+    await setup_rules(hass, language="es")
+    await armed(hass, "away")
+    detect(hass, CAM1)
+    await hass.async_block_till_done()
+    sent = events.call_args_list[0].args[0]
+    assert sent["title"] == "⚠️ Aviso de alarma" and sent["message"] == "Camera 1 - aviso 1 de 3"
+    await call(hass, "alarm_disarm", code="1234")
+    await hass.async_block_till_done()
+    assert _messages(events, "🔓 Alarma desactivada") == ["Desactivada"]

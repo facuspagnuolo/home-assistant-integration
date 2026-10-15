@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 from typing import Any
 
@@ -94,6 +95,11 @@ async def async_setup_platform(
         "async_set_timing",
     )
     platform.async_register_entity_service(
+        "set_mode_enabled",
+        {vol.Required("mode"): vol.In(MODES), vol.Required("enabled"): cv.boolean},
+        "async_set_mode_enabled",
+    )
+    platform.async_register_entity_service(
         "set_rule",
         {
             vol.Required("target"): vol.In(["zone", "sensor"]),
@@ -123,7 +129,11 @@ async def async_setup_platform(
     )
     platform.async_register_entity_service(
         "set_notification",
-        {vol.Optional("warning"): cv.boolean, vol.Optional("trigger"): cv.boolean},
+        {
+            vol.Optional("warning"): cv.boolean,
+            vol.Optional("trigger"): cv.boolean,
+            vol.Optional("trigger_repeat"): vol.All(vol.Coerce(int), vol.Range(min=0, max=3600)),
+        },
         "async_set_notification",
     )
     platform.async_register_entity_service(
@@ -163,17 +173,24 @@ class AnnikaAlarmControlPanel(AlarmControlPanelEntity, RestoreEntity):
     _unrecorded_attributes = frozenset({"config", "decisions", "auto"})
     _attr_code_format = CodeFormat.NUMBER
     _attr_code_arm_required = True
-    _attr_supported_features = (
-        AlarmControlPanelEntityFeature.ARM_AWAY
-        | AlarmControlPanelEntityFeature.ARM_NIGHT
-        | AlarmControlPanelEntityFeature.ARM_VACATION
-        | AlarmControlPanelEntityFeature.TRIGGER
-    )
+    _FEATURES = {
+        "away": AlarmControlPanelEntityFeature.ARM_AWAY,
+        "night": AlarmControlPanelEntityFeature.ARM_NIGHT,
+        "vacation": AlarmControlPanelEntityFeature.ARM_VACATION,
+    }
 
     def __init__(self, panel: AnnikaAlarmPanel) -> None:
         self._panel = panel
         self._attr_name = panel.name
         self._attr_unique_id = f"{DOMAIN}_alarm_panel"
+
+    @property
+    def supported_features(self) -> AlarmControlPanelEntityFeature:
+        # Only the modes that exist and are enabled can be armed.
+        features = AlarmControlPanelEntityFeature.TRIGGER
+        for mode in self._panel.enabled_modes:
+            features |= self._FEATURES[mode]
+        return features
 
     async def async_added_to_hass(self) -> None:
         self._panel.entity_id = self.entity_id
@@ -196,14 +213,17 @@ class AnnikaAlarmControlPanel(AlarmControlPanelEntity, RestoreEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         panel = self._panel
-        return {
+        # A copy: the timings, rules and decisions are edited in place, and a state
+        # that shares them with the live data looks unchanged to Home Assistant, which
+        # then fires no event and keeps serving the old values.
+        return copy.deepcopy({
             "mode": panel.mode,
             "deadline": panel.deadline.isoformat() if panel.deadline else None,
             "locked_until": panel.locked_until.isoformat() if panel.locked else None,
             "modes": panel.modes,
             "auto": self._auto(),
             **(self._panel.rules.attributes() if self._panel.rules else {}),
-        }
+        })
 
     def _auto(self) -> dict[str, Any]:
         """What the card needs to edit the automatic arming: entity ids and the mode."""
@@ -290,6 +310,10 @@ async def _async_set_timing(self, mode, **values):
     self._panel.set_timing(mode, **values)
 
 
+async def _async_set_mode_enabled(self, mode, enabled):
+    await self._run(lambda: self._panel.set_mode_enabled(mode, enabled))
+
+
 async def _async_set_rule(self, target, id, mode, rule):
     _guard(lambda: _rules(self).set_rule(target, id, mode, rule))
 
@@ -311,6 +335,7 @@ async def _async_test_output(self, output):
 
 
 AnnikaAlarmControlPanel.async_set_timing = _async_set_timing
+AnnikaAlarmControlPanel.async_set_mode_enabled = _async_set_mode_enabled
 AnnikaAlarmControlPanel.async_set_rule = _async_set_rule
 AnnikaAlarmControlPanel.async_set_output = _async_set_output
 AnnikaAlarmControlPanel.async_set_warning = _async_set_warning

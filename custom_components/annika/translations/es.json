@@ -45,6 +45,9 @@
     "invalid_mode": {
       "message": "Modo de alarma desconocido"
     },
+    "last_mode": {
+      "message": "Al menos un modo de alarma debe quedar habilitado"
+    },
     "no_rules": {
       "message": "Esta alarma no tiene zonas ni salidas configuradas"
     },

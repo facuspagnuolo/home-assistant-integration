@@ -36,6 +36,7 @@
       keep_days: 'Keep clips (days)',
       picture: 'A picture is taken with every clip.',
       does: 'What each camera does',
+      own_rule: 'overwritten',
       person: 'Person',
       vehicle: 'Vehicle',
       animal: 'Animal',
@@ -72,6 +73,7 @@
       keep_days: 'Guardar clips (días)',
       picture: 'Con cada clip se saca una foto.',
       does: 'Qué hace cada cámara',
+      own_rule: 'sobrescrita',
       person: 'Persona',
       vehicle: 'Vehículo',
       animal: 'Animal',
@@ -143,6 +145,18 @@
       return this._hass && this._hass.states[this._config.entity]
     }
 
+    // The alarm modes that exist and are enabled (null when no alarm panel is found):
+    // the only ones worth offering as a recording condition.
+    get _alarmModes() {
+      const states = (this._hass && this._hass.states) || {}
+      const id = Object.keys(states).find(
+        (key) => key.startsWith('alarm_control_panel.') && states[key].attributes && states[key].attributes.modes
+      )
+      if (!id) return null
+      const listed = states[id].attributes.modes
+      return MODES.filter((mode) => listed[mode] && listed[mode].enabled !== false)
+    }
+
     _service(service, data) {
       return this._hass.callService(SERVICE_DOMAIN, service, { entity_id: this._config.entity, ...data })
     }
@@ -180,7 +194,8 @@
     _recordingHtml(config, t) {
       const { when, recording } = config
       const check = (attrs, on) => `<input type="checkbox" class="annika-check" ${attrs}${on ? ' checked' : ''}>`
-      const modes = MODES.map((mode) =>
+      const shown = this._alarmModes || MODES
+      const modes = MODES.filter((mode) => shown.includes(mode)).map((mode) =>
         `<label class="field">${check(`data-mode="${mode}"${when.armed ? '' : ' disabled'}`, when.armed_modes.includes(mode))}<span>${escapeHtml(t[`mode_${mode}`])}</span></label>`
       ).join('')
       const number = (key, min, max) =>
@@ -219,19 +234,42 @@
 
     _doesHtml(config, t) {
       const head = KINDS.map((kind) => `<th>${escapeHtml(t[kind])}</th>`).join('')
-      const rows = config.cameras.map((camera) => {
+      const groups = config.groups || []
+      const groupOf = (id) => groups.find((group) => group.id === id)
+      const option = (value, action, selected, label) =>
+        `<option value="${value}"${selected ? ' selected' : ''}>${escapeHtml(label || t[action])}</option>`
+      const groupRow = (group) => {
+        const cells = KINDS.map((kind) => {
+          if (!group.kinds.includes(kind)) return '<td class="none" data-label="">—</td>'
+          const action = group.rules[kind] || 'off'
+          const options = ACTIONS.map((a) => option(a, a, a === action)).join('')
+          return `<td data-label="${escapeHtml(t[kind])}"><select class="rule ${action}" data-group="${escapeHtml(group.id)}" data-kind="${kind}">${options}</select></td>`
+        }).join('')
+        return `<tr class="group"><td class="name"><b>${escapeHtml(group.name)}</b></td>${cells}</tr>`
+      }
+      const cameraRow = (camera) => {
+        const group = groupOf(camera.group)
+        const own = group && KINDS.some((kind) => camera.sensors[kind] && camera.rules[kind])
         const cells = KINDS.map((kind) => {
           if (!camera.sensors[kind]) return '<td class="none" data-label="">—</td>'
-          const action = camera.rules[kind] || 'off'
-          const options = ACTIONS.map((a) =>
-            `<option value="${a}"${a === action ? ' selected' : ''}>${escapeHtml(t[a])}</option>`).join('')
-          return `<td data-label="${escapeHtml(t[kind])}"><select class="rule ${action}" data-camera="${escapeHtml(camera.id)}" data-kind="${kind}">${options}</select></td>`
+          const selected = camera.rules[kind] || null
+          const effective = selected || (group ? group.rules[kind] : null) || 'off'
+          const inherit = group ? option('', effective, selected === null, t[effective]) : ''
+          const options = inherit + ACTIONS.map((a) => option(a, a, a === selected)).join('')
+          return `<td data-label="${escapeHtml(t[kind])}"><select class="rule ${effective}${group && selected === null ? ' inherit' : ''}" data-camera="${escapeHtml(camera.id)}" data-kind="${kind}">${options}</select></td>`
         }).join('')
-        return `<tr><td class="name">${escapeHtml(camera.name)}</td>${cells}</tr>`
-      }).join('')
+        const mark = own ? ` <span class="own">${escapeHtml(t.own_rule)}</span>` : ''
+        return `<tr class="${group ? 'member' : ''}"><td class="name">${escapeHtml(camera.name)}${mark}</td>${cells}</tr>`
+      }
+      const rows = []
+      for (const group of groups) {
+        rows.push(groupRow(group))
+        config.cameras.filter((camera) => camera.group === group.id).forEach((camera) => rows.push(cameraRow(camera)))
+      }
+      config.cameras.filter((camera) => !groupOf(camera.group)).forEach((camera) => rows.push(cameraRow(camera)))
       const hint = config.notification ? '' : `<div class="muted note">${escapeHtml(t.no_notification)}</div>`
       return `<div class="wide"><div class="sec" data-heading="${escapeHtml(t.does)}">${escapeHtml(t.does)}</div>
-        <ha-card class="panel table"><table class="does"><thead><tr><th></th>${head}</tr></thead><tbody>${rows}</tbody></table></ha-card>${hint}</div>`
+        <ha-card class="panel table"><table class="does"><thead><tr><th></th>${head}</tr></thead><tbody>${rows.join('')}</tbody></table></ha-card>${hint}</div>`
     }
 
     _ago(iso) {
@@ -297,10 +335,14 @@
       const attrs = stateObj.attributes
       const config = attrs.config
       if (!config) return
-      const key = JSON.stringify([config, attrs.clips, attrs.image_base, t.cameras, this._playing && [this._playing.url, this._playing.error]])
+      const key = JSON.stringify([config, this._alarmModes, attrs.clips, attrs.image_base, t.cameras, this._playing && [this._playing.url, this._playing.error]])
       if (!force && key === this._structure) return
       this._structure = key
 
+      // Keep the height while the content is rebuilt (the titles arrive a moment later):
+      // on a phone a shorter page would scroll itself back to the top.
+      const keep = this.offsetHeight
+      if (keep) this.style.minHeight = `${keep}px`
       this.innerHTML = `
         <style>
           annika-cameras-card { display: block; container-type: inline-size; }
@@ -346,6 +388,9 @@
           .annika-cams td { padding: 8px; border-top: 1px solid var(--divider-color); vertical-align: middle; }
           .annika-cams td.none { color: var(--disabled-color); }
           .annika-cams select.rule { width: 100%; min-width: 120px; }
+          .annika-cams select.rule.inherit { border-style: dashed; opacity: .75; }
+          .annika-cams .does tr.member td.name { padding-left: 20px; }
+          .annika-cams .does .own { color: var(--primary-color); font-size: 12px; margin-left: 6px; }
           .annika-cams select.rule.off { color: var(--secondary-text-color); }
           .annika-cams select.rule.record { color: var(--primary-color); border-color: color-mix(in srgb, var(--primary-color) 45%, transparent);
             background: color-mix(in srgb, var(--primary-color) 12%, transparent); }
@@ -402,7 +447,7 @@
       this._bind(config, attrs)
       this._signImages()
       this._mountLive(config)
-      this._headings()
+      this._headings().then(() => requestAnimationFrame(() => { this.style.minHeight = '' }))
     }
 
     // Section titles are Home Assistant's own heading card, like the other
@@ -499,10 +544,17 @@
       const on = (selector, event, handler) =>
         this.querySelectorAll(selector).forEach((el) => el.addEventListener(event, (e) => handler(el, e)))
       const modes = () =>
-        MODES.filter((mode) => this.querySelector(`[data-mode="${mode}"]`).checked)
+        MODES.filter((mode) => {
+          const box = this.querySelector(`[data-mode="${mode}"]`)
+          // A mode the alarm has switched off has no box: it keeps what it had.
+          return box ? box.checked : (this._stateObj.attributes.config.when.armed_modes || []).includes(mode)
+        })
 
+      // An empty value gives the detection back to the camera's group.
       on('select[data-camera]', 'change', (el) =>
-        this._service('set_camera_rule', { camera: el.dataset.camera, type: el.dataset.kind, action: el.value }))
+        this._service('set_camera_rule', { camera: el.dataset.camera, type: el.dataset.kind, action: el.value || null }))
+      on('select[data-group]', 'change', (el) =>
+        this._service('set_group_rule', { group: el.dataset.group, type: el.dataset.kind, action: el.value }))
       on('[data-when]', 'change', (el) => this._service('set_recording_when', { [el.dataset.when]: el.checked }))
       on('[data-mode]', 'change', () => this._service('set_recording_when', { armed_modes: modes() }))
       on('[data-clock]', 'change', (el) => {

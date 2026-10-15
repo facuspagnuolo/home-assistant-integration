@@ -106,8 +106,9 @@ async def test_record_and_notify_sends_the_snapshot_with_the_notification(hass, 
 
     sent.assert_awaited_once()
     event = sent.await_args.args[0]
-    assert event["view"] == "alarm" and event["title"] == "Front: person detected"
-    assert event["image_url"] == f"/local/snaps/{cameras.clips[0]['image']}"
+    assert event["view"] == "alarm" and event["title"] == "👤 Person detected"
+    assert event["message"] == "Front"
+    assert event["imageUrl"] == f"/local/snaps/{cameras.clips[0]['image']}"
     assert cameras.clips[0]["notified"] is True
 
 
@@ -131,7 +132,7 @@ async def test_snapshots_under_media_are_served_by_the_media_source(hass, tmp_pa
     cameras = await start(hass, tmp_path, snapshots="/media/snapshots")
     assert cameras.image_base == "/media/local/snapshots"
     await detect(hass, PERSON)
-    assert sent.await_args.args[0]["image_url"] == f"/media/local/snapshots/{cameras.clips[0]['image']}"
+    assert sent.await_args.args[0]["imageUrl"] == f"/media/local/snapshots/{cameras.clips[0]['image']}"
     assert services.snapshot[0].data["filename"] == f"/media/snapshots/{cameras.clips[0]['image']}"
 
 
@@ -139,7 +140,7 @@ async def test_snapshots_outside_www_and_media_have_no_url(hass, tmp_path, servi
     cameras = await start(hass, tmp_path, snapshots=str(tmp_path / "private"))
     assert cameras.image_base is None
     await detect(hass, PERSON)
-    assert "image_url" not in sent.await_args.args[0]
+    assert "imageUrl" not in sent.await_args.args[0]
 
 
 async def test_no_notification_without_a_view(hass, tmp_path, services, sent):
@@ -331,7 +332,7 @@ async def test_a_failed_snapshot_still_records_without_a_picture(hass, tmp_path,
     await detect(hass, PERSON)
 
     assert cameras.clips[0]["image"] is None
-    assert "image_url" not in sent.await_args.args[0]
+    assert "imageUrl" not in sent.await_args.args[0]
 
 
 async def test_no_lookback_when_before_is_zero(hass, tmp_path, services, sent):
@@ -500,3 +501,109 @@ def test_the_schema_rejects_nonsense():
     ):
         with pytest.raises(vol.Invalid):
             CAMERAS_SCHEMA(bad)
+
+
+async def test_editing_a_rule_writes_a_new_state_the_card_can_see(hass, tmp_path, services, sent):
+    """The state's attributes must not share dicts with the live rules, or Home Assistant sees
+    "nothing changed", fires no event and keeps serving the old values after a refresh."""
+
+    from pytest_homeassistant_custom_component.common import async_capture_events
+
+    assert await async_setup_component(hass, "sensor", {})
+    hass.data[DATA_CAMERAS] = AnnikaCameras(hass, config(hass, tmp_path))
+    hass.config.components.add(DOMAIN)
+    for sensor in (PERSON, VEHICLE, MOTION):
+        hass.states.async_set(sensor, "off")
+    await async_load_platform(hass, "sensor", DOMAIN, {DISCOVERY_KIND: KIND_CAMERAS}, {})
+    await hass.async_block_till_done()
+    entity = "sensor.annika_cameras"
+    events = async_capture_events(hass, "state_changed")
+    events.clear()
+
+    def vehicle(state):
+        return state.attributes["config"]["cameras"][0]["rules"]["vehicle"]
+
+    before = hass.states.get(entity)
+    assert vehicle(before) == "record"
+    await hass.services.async_call(
+        DOMAIN, "set_camera_rule",
+        {"entity_id": entity, "camera": "front", "type": "vehicle", "action": "record_notify"}, blocking=True,
+    )
+    await hass.async_block_till_done()
+    assert vehicle(hass.states.get(entity)) == "record_notify"
+    assert vehicle(before) == "record"  # the old state keeps what it had
+    assert [e for e in events if e.data["entity_id"] == entity], "no state_changed was fired"
+
+
+def grouped(**extra):
+    return {
+        "groups": [{"name": "Garden", "rules": {"person": "record_notify"}}],
+        "cameras": [
+            {"name": "Front", "entity": "camera.front", "person": PERSON, "vehicle": VEHICLE, "group": "Garden"},
+            {
+                "name": "Back", "entity": "camera.back", "motion": MOTION, "person": "binary_sensor.back_person",
+                "group": "Garden", "rules": {"person": "off"},
+            },
+            {"name": "Side", "entity": "camera.side"},
+        ],
+        **extra,
+    }
+
+
+async def test_a_camera_follows_its_group_unless_it_has_a_rule_of_its_own(hass, tmp_path, services, sent):
+    hass.states.async_set("binary_sensor.back_person", "off")
+    cameras = await start(hass, tmp_path, **grouped())
+    await detect(hass, PERSON)
+    assert cameras.clips[0]["camera"] == "Front" and cameras.clips[0]["notified"] is True
+    before = len(cameras.clips)
+    await detect(hass, "binary_sensor.back_person")
+    assert len(cameras.clips) == before, "Back overrides the group with off"
+    await detect(hass, VEHICLE)
+    assert len(cameras.clips) == before, "the group's vehicle rule is off"
+
+
+async def test_changing_the_group_changes_the_cameras_that_follow_it(hass, tmp_path, services, sent):
+    cameras = await start(hass, tmp_path, **grouped())
+    cameras.set_group_rule("garden", "vehicle", "record")
+    await detect(hass, VEHICLE)
+    assert cameras.clips[0]["type"] == "vehicle" and cameras.clips[0]["notified"] is False
+
+
+async def test_an_own_rule_can_be_given_back_to_the_group(hass, tmp_path, services, sent):
+    cameras = await start(hass, tmp_path, **grouped())
+    cameras.set_rule("front", "person", "off")
+    await detect(hass, PERSON)
+    assert cameras.clips == []
+    cameras.set_rule("front", "person", None)
+    cameras._last.clear()
+    await detect(hass, PERSON)
+    assert len(cameras.clips) == 1
+    with pytest.raises(ValueError):
+        cameras.set_rule("side", "person", None)
+    attrs = cameras.attributes()["config"]
+    assert attrs["groups"] == [
+        {"id": "garden", "name": "Garden", "kinds": ["person", "vehicle", "motion"],
+         "rules": {"person": "record_notify", "vehicle": "off", "animal": "off", "motion": "off"}}
+    ]
+    assert [c["group"] for c in attrs["cameras"]] == ["garden", "garden", None]
+
+
+async def test_group_rules_and_overrides_are_stored(hass, tmp_path, services, sent):
+    cameras = await start(hass, tmp_path, **grouped())
+    cameras.set_group_rule("garden", "vehicle", "record")
+    cameras.set_rule("front", "person", "record")
+    saved = cameras._saved()
+    again = AnnikaCameras(hass, config(hass, tmp_path, **grouped()))
+    again._apply(saved)
+    assert again.groups[0].rules["vehicle"] == "record"
+    assert again.cameras[0].rules["person"] == "record"
+    assert again.cameras[0].rules["vehicle"] is None
+
+
+async def test_a_group_a_camera_names_exists_even_when_the_yaml_does_not_list_it(hass, tmp_path, services, sent):
+    cameras = await start(hass, tmp_path, groups=[], cameras=[
+        {"name": "Front", "entity": "camera.front", "person": PERSON, "group": "Entrance"},
+    ])
+    assert [g.name for g in cameras.groups] == ["Entrance"]
+    await detect(hass, PERSON)
+    assert cameras.clips == [], "a group nobody configured starts at off"

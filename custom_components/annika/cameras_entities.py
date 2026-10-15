@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 import voluptuous as vol
@@ -35,9 +36,19 @@ async def async_setup_platform(
         {
             vol.Required("camera"): cv.string,
             vol.Required("type"): vol.In(DETECTIONS),
-            vol.Required("action"): vol.In(ACTIONS),
+            # None gives the detection back to the camera's group.
+            vol.Required("action"): vol.Any(None, vol.In(ACTIONS)),
         },
         "async_set_camera_rule",
+    )
+    platform.async_register_entity_service(
+        "set_group_rule",
+        {
+            vol.Required("group"): cv.string,
+            vol.Required("type"): vol.In(DETECTIONS),
+            vol.Required("action"): vol.In(ACTIONS),
+        },
+        "async_set_group_rule",
     )
     platform.async_register_entity_service(
         SERVICE_SET_RECORDING,
@@ -97,13 +108,22 @@ class AnnikaCamerasSensor(SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        return self._cameras.attributes()
+        # A copy: the rules and clips are edited in place, and a state that shares
+        # them with the live data looks unchanged to Home Assistant, which then
+        # fires no event and keeps serving the old values.
+        return copy.deepcopy(self._cameras.attributes())
 
     async def async_set_camera_rule(self, camera: str, type: str, action: str) -> None:  # noqa: A002
         try:
             self._cameras.set_rule(camera, type, action)
         except ValueError as error:
             raise _unknown(f"{camera}/{type}") from error
+
+    async def async_set_group_rule(self, group: str, type: str, action: str) -> None:  # noqa: A002
+        try:
+            self._cameras.set_group_rule(group, type, action)
+        except ValueError as error:
+            raise _unknown(f"{group}/{type}") from error
 
     async def async_set_recording(self, **values) -> None:
         self._cameras.set_recording(**values)

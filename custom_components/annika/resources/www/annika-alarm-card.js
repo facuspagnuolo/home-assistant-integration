@@ -62,6 +62,7 @@
       resets_in: 'resets in {minutes} min',
       what_fires: 'What fires',
       arming: 'Arming',
+      enabled: 'Enabled',
       arming_time: 'Arming time',
       delay_time: 'Delay time',
       arming_hint: 'Seconds to leave before the alarm is armed',
@@ -75,6 +76,8 @@
       until_disarmed: 'until disarmed',
       stop: 'Stop',
       notification: 'Notification',
+      repeat_every: 'every',
+      repeat_hint: 'Repeat the notification this often while the alarm stays triggered (0 = once)',
       notification_sub: 'Annika app · view: {view}',
       entities_sub: '{n} entities',
       zones: 'Zones and sensors',
@@ -134,6 +137,7 @@
       resets_in: 'se reinicia en {minutes} min',
       what_fires: 'Qué se activa',
       arming: 'Armado',
+      enabled: 'Habilitado',
       arming_time: 'Tiempo de armado',
       delay_time: 'Tiempo de demora',
       arming_hint: 'Segundos para salir antes de que la alarma quede armada',
@@ -147,6 +151,8 @@
       until_disarmed: 'hasta desarmar',
       stop: 'Detener',
       notification: 'Notificación',
+      repeat_every: 'cada',
+      repeat_hint: 'Repite la notificación con esta frecuencia mientras la alarma siga disparada (0 = una sola vez)',
       notification_sub: 'App Annika · vista: {view}',
       entities_sub: '{n} entidades',
       zones: 'Zonas y sensores',
@@ -254,6 +260,18 @@
         : (this._config.language || (this._hass && this._hass.language) || 'en')
       const base = String(lang).toLowerCase().split('-')[0]
       return { ...TEXTS.en, ...(TEXTS[base] || {}) }
+    }
+
+    // The modes the panel was configured with: nothing is shown for the others.
+    get _existing() {
+      const listed = this._stateObj && this._stateObj.attributes.modes
+      return listed ? MODES.filter((mode) => listed[mode]) : MODES
+    }
+
+    // Those the person left enabled: the only ones that can be armed or chosen.
+    get _modes() {
+      const listed = this._stateObj && this._stateObj.attributes.modes
+      return this._existing.filter((mode) => !listed || listed[mode].enabled !== false)
     }
 
     get _stateObj() {
@@ -382,7 +400,7 @@
       const heading = this._config.name || stateObj.attributes.friendly_name || 'Alarm'
       // Disarm exists only while there is something to disarm.
       const modes = disarmed && !this._change
-        ? ARM.map((mode) => `<button class="mode${this._action === mode ? ' on' : ''}" data-mode="${mode}">${escapeHtml(t[mode])}</button>`).join('')
+        ? ARM.filter((mode) => this._modes.includes(mode.replace('arm_', ''))).map((mode) => `<button class="mode${this._action === mode ? ' on' : ''}" data-mode="${mode}">${escapeHtml(t[mode])}</button>`).join('')
         : ''
       const disarmButton = !disarmed && !this._change
         ? `<span class="mode disarm on">${escapeHtml(t.disarm)}</span>`
@@ -472,7 +490,7 @@
         rows.push(`<tr>
           <td class="device"><div>${escapeHtml(t.notification)}</div><div class="sub">${escapeHtml(fill(t.notification_sub, { view: n.view }))}</div></td>
           <td><div class="cell">${check('data-notify="warning"', n.warning)}</div></td>
-          <td><div class="cell">${check('data-notify="trigger"', n.trigger)}</div></td>
+          <td><div class="cell">${check('data-notify="trigger"', n.trigger)}<span class="muted" title="${escapeHtml(t.repeat_hint)}">${escapeHtml(t.repeat_every)}</span><input type="number" min="0" max="3600" data-notify-repeat title="${escapeHtml(t.repeat_hint)}" value="${escapeHtml(n.trigger_repeat || 0)}"><span class="muted">${escapeHtml(t.sec)}</span></div></td>
           <td class="test"><button class="play" data-test="notification" aria-label="${escapeHtml(t.test)}">${PLAY}</button></td>
         </tr>`)
       }
@@ -484,15 +502,16 @@
     }
 
     _armingHtml(modes, t) {
-      const rows = MODES.filter((mode) => modes[mode]).map((mode) => `<tr>
+      const rows = MODES.filter((mode) => modes[mode]).map((mode) => `<tr${modes[mode].enabled === false ? ' class="off"' : ''}>
         <td class="device">${escapeHtml(t['mode_' + mode])}</td>
+        <td><div class="cell"><input type="checkbox" class="annika-check" data-mode-enabled="${mode}"${modes[mode].enabled === false ? '' : ' checked'}></div></td>
         <td><div class="cell"><input type="number" min="0" max="600" data-timing="${mode}" data-key="arming" value="${modes[mode].arming}"><span class="muted">${escapeHtml(t.sec)}</span></div></td>
         <td><div class="cell"><input type="number" min="0" max="600" data-timing="${mode}" data-key="pending" value="${modes[mode].pending}"><span class="muted">${escapeHtml(t.sec)}</span></div></td>
       </tr>`).join('')
       return `
         <div class="sec" data-heading="${escapeHtml(t.arming)}">${escapeHtml(t.arming)}</div>
         <div class="panel table"><table class="arming">
-          <thead><tr><th></th><th title="${escapeHtml(t.arming_hint)}">${escapeHtml(t.arming_time)}</th><th title="${escapeHtml(t.delay_hint)}">${escapeHtml(t.delay_time)}</th></tr></thead>
+          <thead><tr><th></th><th>${escapeHtml(t.enabled)}</th><th title="${escapeHtml(t.arming_hint)}">${escapeHtml(t.arming_time)}</th><th title="${escapeHtml(t.delay_hint)}">${escapeHtml(t.delay_time)}</th></tr></thead>
           <tbody>${rows}</tbody></table></div>`
     }
 
@@ -508,13 +527,16 @@
       for (const zone of config.zones) {
         const summary = zone.sensors.length === 1 ? t.sensors_1 : fill(t.sensors_n, { n: zone.sensors.length })
         rows.push(`<tr class="zone"><td class="name"><b>${escapeHtml(zone.name)}</b> <span class="sub">${escapeHtml(summary)}</span></td>
-          ${MODES.map((mode) => `<td><select class="rule ${zone.rules[mode]}" data-zone="${escapeHtml(zone.id)}" data-mode="${mode}">${optionList(zone.rules[mode])}</select></td>`).join('')}</tr>`)
+          ${this._existing.map((mode) => this._modes.includes(mode)
+            ? `<td><select class="rule ${zone.rules[mode]}" data-zone="${escapeHtml(zone.id)}" data-mode="${mode}">${optionList(zone.rules[mode])}</select></td>`
+            : '<td class="none">–</td>').join('')}</tr>`)
         for (const sensor of zone.sensors) {
-          const own = MODES.some((mode) => sensor.rules[mode] !== null)
+          const own = this._modes.some((mode) => sensor.rules[mode] !== null)
           rows.push(`<tr class="sensor"><td class="name"><div class="sname">${this._sensorIcon(sensor)}<div>
             <div>${escapeHtml(sensor.name)}</div>
             <div class="sub">${escapeHtml(sensor.detail || '')}${own ? ` <span class="own">${escapeHtml(t.own_rule)}</span>` : ''}</div></div></div></td>
-            ${MODES.map((mode) => {
+            ${this._existing.map((mode) => {
+              if (!this._modes.includes(mode)) return '<td class="none">–</td>'
               const selected = sensor.rules[mode]
               const effective = selected || zone.rules[mode]
               return `<td><select class="rule ${effective}${selected === null ? ' inherit' : ''}" data-sensor="${escapeHtml(sensor.id)}" data-mode="${mode}">${optionList(selected, zone.rules[mode])}</select></td>`
@@ -524,7 +546,7 @@
       return `
         <div class="sec wide" data-heading="${escapeHtml(t.zones)}">${escapeHtml(t.zones)}</div>
         <div class="panel table wide"><table class="zones">
-          <thead><tr><th>${escapeHtml(t.zone_sensor)}</th>${MODES.map((mode) => `<th>${escapeHtml(t['mode_' + mode])}</th>`).join('')}</tr></thead>
+          <thead><tr><th>${escapeHtml(t.zone_sensor)}</th>${this._existing.map((mode) => `<th>${escapeHtml(t['mode_' + mode])}</th>`).join('')}</tr></thead>
           <tbody>${rows.join('')}</tbody></table></div>`
     }
 
@@ -575,7 +597,7 @@
         const minutes = this._entityState(a.quiet_minutes) ?? ''
         const mode = this._entityState(a.mode_entity) || a.mode
         const modeControl = a.mode_entity
-          ? `<select data-select="${escapeHtml(a.mode_entity)}">${MODES.map((m) => `<option value="${m}"${m === mode ? ' selected' : ''}>${escapeHtml(t['mode_' + m])}</option>`).join('')}</select>`
+          ? `<select data-select="${escapeHtml(a.mode_entity)}">${this._modes.map((m) => `<option value="${m}"${m === mode ? ' selected' : ''}>${escapeHtml(t['mode_' + m])}</option>`).join('')}</select>`
           : `<b>${escapeHtml(t['mode_' + mode] || mode)}</b>`
         const quiet = a.has_sensors
           ? `<span class="quiet">${escapeHtml(t.quiet)}</span>
@@ -590,7 +612,7 @@
         const d = auto.disarm
         const dMode = this._entityState(d.mode_entity) || d.mode
         const dModeControl = d.mode_entity
-          ? `<select data-select="${escapeHtml(d.mode_entity)}">${MODES.map((m) => `<option value="${m}"${m === dMode ? ' selected' : ''}>${escapeHtml(t['mode_' + m])}</option>`).join('')}</select>`
+          ? `<select data-select="${escapeHtml(d.mode_entity)}">${this._modes.map((m) => `<option value="${m}"${m === dMode ? ' selected' : ''}>${escapeHtml(t['mode_' + m])}</option>`).join('')}</select>`
           : `<b>${escapeHtml(t['mode_' + dMode] || dMode)}</b>`
         html += `<div class="auto-row">${check(d.enabled)}<span>${escapeHtml(t.auto_disarm)} ${escapeHtml(t.at)}</span>
           <input type="time" data-time="${escapeHtml(d.time || '')}" value="${clock(d.time)}">
@@ -633,6 +655,10 @@
       const zones = config && config.zones.length ? this._zonesHtml(config, t) : ''
       const activity = config ? this._decisionsHtml(attrs.decisions || [], t) : ''
 
+      // Keep the height while the content is rebuilt (the titles arrive a moment later):
+      // on a phone a shorter page would scroll itself back to the top.
+      const keep = this.offsetHeight
+      if (keep) this.style.minHeight = `${keep}px`
       this.innerHTML = `
         <style>
           annika-alarm-card { display: block; container-type: inline-size; }
@@ -641,7 +667,9 @@
           .annika-alarm .sec { font-size: 16px; font-weight: 500; margin: 16px 0 8px; padding: 0 4px; color: var(--primary-text-color); }
           .annika-alarm .annika-heading { display: block; }
           .annika-alarm .side .sec:first-child { margin-top: 0; }
-          .annika-alarm .arming th, .annika-alarm .arming td { width: 33%; }
+          .annika-alarm .arming th, .annika-alarm .arming td { width: 25%; }
+          .annika-alarm .arming tr.off td.device, .annika-alarm .arming tr.off .cell:not(:has(.annika-check)) { opacity: .5; }
+          .annika-alarm .zones td.none { color: var(--secondary-text-color); text-align: center; }
           .annika-alarm .panel { background: var(--ha-card-background, var(--card-background-color)); border-radius: var(--ha-card-border-radius, 0px);
             border: var(--ha-card-border-width, 0px) solid var(--ha-card-border-color, var(--divider-color)); box-shadow: var(--ha-card-box-shadow, none);
             padding: 12px 16px; box-sizing: border-box; }
@@ -758,7 +786,7 @@
         </div>
       `
       this._bind()
-      this._headings()
+      this._headings().then(() => requestAnimationFrame(() => { this.style.minHeight = '' }))
     }
 
     // Section titles are Home Assistant's own heading card, like the other
@@ -783,7 +811,7 @@
         this.querySelectorAll(selector).forEach((el) => el.addEventListener(event, () => handler(el)))
       const hass = this._hass
 
-      on('[data-key]', 'click', (el) => this._press(el.dataset.key))
+      on('button[data-key]', 'click', (el) => this._press(el.dataset.key))
       on('[data-mode].mode', 'click', (el) => this._chooseMode(el.dataset.mode))
       on('[data-change]', 'click', () => this._startChange())
       on('[data-cancel]', 'click', () => this._cancelChange())
@@ -800,7 +828,11 @@
       }
       on('[data-duration]', 'change', (el) => duration(el.dataset.duration))
       on('[data-unit]', 'change', (el) => duration(el.dataset.unit))
+      on('[data-notify-repeat]', 'change', (el) => {
+        if (el.value !== '') this._service('set_notification', { trigger_repeat: Number(el.value) })
+      })
       on('[data-notify]', 'change', (el) => this._service('set_notification', { [el.dataset.notify]: el.checked }))
+      on('[data-mode-enabled]', 'change', (el) => this._service('set_mode_enabled', { mode: el.dataset.modeEnabled, enabled: el.checked }))
       on('[data-timing]', 'change', (el) => {
         if (el.value !== '') this._service('set_timing', { mode: el.dataset.timing, [el.dataset.key]: Number(el.value) })
       })

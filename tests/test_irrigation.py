@@ -365,7 +365,7 @@ async def test_waters_each_zone_in_order_with_its_group_minutes(hass, world, val
     assert irrigation.last_result == "completed"
     assert hass.states.get(entity(hass, "sensor", irr.UNIQUE_STATUS)).state == irr.STATUS_IDLE
     titles = [call.args[0]["title"] for call in annika_events.await_args_list]
-    assert titles == ["Irrigation started", "Irrigation finished"]
+    assert titles == ["🌱 Irrigation started", "🌱 Irrigation finished"]
     assert all(call.args[0]["view"] == "riego" and call.args[0]["type"] == "info" for call in annika_events.await_args_list)
 
 
@@ -379,7 +379,7 @@ async def test_the_logbook_and_the_events_follow_the_home_assistant_language(
     await water_at(hass, freezer, irrigation.next_run)
 
     sent = [(call.args[0]["title"], call.args[0]["message"]) for call in annika_events.await_args_list]
-    assert sent == [("Riego iniciado", "Programa de Verano"), ("Riego terminado", "Programa de Verano")]
+    assert sent == [("🌱 Riego iniciado", "Programa de Verano"), ("🌱 Riego terminado", "Programa de Verano")]
     assert [event.data["message"] for event in logbook] == ["Inicio del riego de Verano", "Riego de Verano terminado"]
     assert {event.data["name"] for event in logbook} == {"Riego"}
 
@@ -454,7 +454,7 @@ async def test_rain_halfway_closes_the_open_zone_and_sets_the_controller_delay(
     assert ("on", "switch.office_front") not in valves
     assert irrigation.last_result == irr.SKIP_RAIN
     assert world["rain_delay"].set_to == [2]
-    assert annika_events.await_args_list[-1].args[0]["title"] == "Irrigation stopped by rain"
+    assert annika_events.await_args_list[-1].args[0]["title"] == "🌧️ Irrigation stopped by rain"
 
 
 async def test_the_stop_button_ends_the_run(hass, world, valves, waits, annika_events, freezer):

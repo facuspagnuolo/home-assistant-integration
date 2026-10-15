@@ -45,6 +45,9 @@
     "invalid_mode": {
       "message": "Unknown alarm mode"
     },
+    "last_mode": {
+      "message": "At least one alarm mode must stay enabled"
+    },
     "no_rules": {
       "message": "This alarm has no zones or outputs configured"
     },

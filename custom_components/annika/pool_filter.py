@@ -147,8 +147,8 @@ TEXTS = {
         "disabled": "{name} off: the pool_filter was turned off",
         "manual_off": "{name} turned off by hand",
         "restart": "{name} off: Home Assistant restarted during the run",
-        "event_on": "{name} on",
-        "event_off": "{name} off",
+        "event_on": "🌊 {name} on",
+        "event_off": "🌊 {name} off",
         "event_message": "{season}, {minutes} min",
     },
     "es": {
@@ -159,8 +159,8 @@ TEXTS = {
         "disabled": "{name} apagada: se apagó el programa",
         "manual_off": "{name} apagada a mano",
         "restart": "{name} apagada: Home Assistant se reinició durante la corrida",
-        "event_on": "{name} prendida",
-        "event_off": "{name} apagada",
+        "event_on": "🌊 {name} prendida",
+        "event_off": "🌊 {name} apagada",
         "event_message": "{season}, {minutes} min",
     },
 }

@@ -19,7 +19,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
-from .alarm_panel import DATA_ALARM_PANEL, MODES, AnnikaAlarmPanel
+from .alarm_panel import DATA_ALARM_PANEL, AnnikaAlarmPanel
 from .const import DOMAIN
 
 AUTO_ARM_ENABLED = "auto_arm_enabled"
@@ -123,7 +123,6 @@ class AutoModeSelect(_AutoEntity, SelectEntity, RestoreEntity):
     """The mode the panel arms itself in, or the one it disarms itself from."""
 
     _attr_icon = "mdi:shield-home"
-    _attr_options = list(MODES)
     _attr_translation_key = "alarm_mode"
 
     def __init__(self, panel: AnnikaAlarmPanel, key: str, label: str, setting: str) -> None:
@@ -131,12 +130,17 @@ class AutoModeSelect(_AutoEntity, SelectEntity, RestoreEntity):
         self._setting = setting
 
     @property
+    def options(self) -> list[str]:
+        # The modes that exist and are enabled.
+        return self._panel.enabled_modes
+
+    @property
     def current_option(self) -> str:
         return getattr(self._panel, self._setting)
 
     async def async_added_to_hass(self) -> None:
         last = await self.async_get_last_state()
-        if last is not None and last.state in MODES:
+        if last is not None and last.state in self._panel.enabled_modes:
             self._panel.configure_auto(**{self._setting: last.state})
         await self._listen()
 

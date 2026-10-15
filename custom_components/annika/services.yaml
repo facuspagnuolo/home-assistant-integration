@@ -107,7 +107,7 @@ set_rule:
     target: {name: Target, required: true, selector: {select: {options: [zone, sensor]}}}
     id: {name: Id, required: true, selector: {text: null}}
     mode: {name: Mode, required: true, selector: {select: {options: [away, night, vacation]}}}
-    rule: {name: Rule, required: true, selector: {select: {options: [off, warning, trigger]}}}
+    rule: {name: Rule, required: true, selector: {select: {options: ["off", warning, trigger]}}}
 set_output:
   name: Set alarm output
   description: What an output does on a warning and on a trigger.
@@ -140,6 +140,7 @@ set_notification:
   fields:
     warning: {name: On warning, selector: {boolean: null}}
     trigger: {name: On trigger, selector: {boolean: null}}
+    trigger_repeat: {name: Repeat while triggered (seconds, 0 = once), selector: {number: {min: 0, max: 3600}}}
 test_output:
   name: Test alarm output
   description: Run an output like a warning would, or send a test notification (output "notification").
@@ -160,6 +161,16 @@ set_timing:
     mode: {name: Mode, required: true, selector: {select: {options: [away, night, vacation]}}}
     arming: {name: Arming seconds, selector: {number: {min: 0, max: 600}}}
     pending: {name: Delay seconds, selector: {number: {min: 0, max: 600}}}
+set_mode_enabled:
+  name: Enable or disable an alarm mode
+  description: A disabled mode cannot be armed and is hidden from the card. The last enabled mode cannot be disabled; a panel armed in the mode is disarmed.
+  target:
+    entity:
+      integration: annika
+      domain: alarm_control_panel
+  fields:
+    mode: {name: Mode, required: true, selector: {select: {options: [away, night, vacation]}}}
+    enabled: {name: Enabled, required: true, selector: {boolean: null}}
 disarm_without_code:
   name: Disarm without code
   description: Disarm the alarm with no code. Only exists when allow_disarm_without_code is true in the configuration.
@@ -186,7 +197,18 @@ set_camera_rule:
   fields:
     camera: {name: Camera, required: true, selector: {text: null}}
     type: {name: Detection, required: true, selector: {select: {options: [person, vehicle, animal, motion]}}}
-    action: {name: Action, required: true, selector: {select: {options: [off, record, record_notify]}}}
+    action: {name: Action, description: Leave empty to follow the camera's group., selector: {select: {options: ["off", record, record_notify]}}}
+set_group_rule:
+  name: Set what a camera group does
+  description: What the cameras of a group do for a detection, unless a camera has a rule of its own.
+  target:
+    entity:
+      integration: annika
+      domain: sensor
+  fields:
+    group: {name: Group, required: true, selector: {text: null}}
+    type: {name: Detection, required: true, selector: {select: {options: [person, vehicle, animal, motion]}}}
+    action: {name: Action, required: true, selector: {select: {options: ["off", record, record_notify]}}}
 set_recording:
   name: Set recording
   description: Seconds recorded before and after a detection, the pause between clips, and days clips are kept.

@@ -273,7 +273,8 @@ from datetime import datetime
 from custom_components.annika.const import DISCOVERY_KIND, KIND_ALARM
 
 SENSORS = ["binary_sensor.hall", "binary_sensor.kitchen"]
-NIGHT_NOW = {"night": {"arming": 0, "pending": 0}}
+# Night arms at once; the other modes exist (a mode the config leaves out does not), with their defaults.
+NIGHT_NOW = {"away": {}, "night": {"arming": 0, "pending": 0}, "vacation": {}}
 AUTO = ALARM_SCHEMA(
     {
         "code": "1234",
@@ -505,8 +506,8 @@ async def test_arming_and_delay_seconds_are_edited_per_mode_and_stored(hass, fre
     await hass.services.async_call(
         DOMAIN, "set_timing", {"entity_id": ENTITY, "mode": "away", "arming": 5, "pending": 7}, blocking=True
     )
-    assert hass.states.get(ENTITY).attributes["modes"]["away"] == {"arming": 5, "pending": 7}
-    assert hass.states.get(ENTITY).attributes["modes"]["night"] == {"arming": 0, "pending": 0}
+    assert hass.states.get(ENTITY).attributes["modes"]["away"] == {"arming": 5, "pending": 7, "enabled": True}
+    assert hass.states.get(ENTITY).attributes["modes"]["night"] == {"arming": 0, "pending": 0, "enabled": True}
     await call(hass, "alarm_arm_away", code="1234")
     await advance(hass, freezer, 6)
     assert state(hass) == "armed_away"
@@ -515,10 +516,10 @@ async def test_arming_and_delay_seconds_are_edited_per_mode_and_stored(hass, fre
     await advance(hass, freezer, 8)
     assert state(hass) == "triggered"
     await panel._store.async_save(panel._data())
-    assert hass_storage[f"{DOMAIN}.alarm_panel"]["data"]["modes"]["away"] == {"arming": 5, "pending": 7}
+    assert hass_storage[f"{DOMAIN}.alarm_panel"]["data"]["modes"]["away"] == {"arming": 5, "pending": 7, "enabled": True}
     other = AnnikaAlarmPanel(hass, CONFIG)
     await other.async_load()
-    assert other.modes["away"] == {"arming": 5, "pending": 7}
+    assert other.modes["away"] == {"arming": 5, "pending": 7, "enabled": True}
     other.check_code("1234")  # the code is kept too
 
 
@@ -527,7 +528,7 @@ async def test_one_of_the_two_times_can_change_alone_and_limits_hold(hass):
     await hass.services.async_call(
         DOMAIN, "set_timing", {"entity_id": ENTITY, "mode": "vacation", "pending": 0}, blocking=True
     )
-    assert hass.states.get(ENTITY).attributes["modes"]["vacation"] == {"arming": 10, "pending": 0}
+    assert hass.states.get(ENTITY).attributes["modes"]["vacation"] == {"arming": 10, "pending": 0, "enabled": True}
     for bad in ({"arming": -1}, {"pending": 601}, {"mode": "party"}):
         with pytest.raises(Exception):
             await hass.services.async_call(
@@ -584,3 +585,141 @@ async def test_a_bad_alarm_block_is_logged_and_skipped_not_fatal(hass, caplog):
     await async_setup_alarm_panel(hass, {D: {"alarm": {"code": "abcd"}}})
     assert DATA_ALARM_PANEL not in hass.data
     assert "Annika alarm not started" in caplog.text
+
+
+def test_only_the_modes_listed_in_the_config_exist():
+    only_night = ALARM_SCHEMA({"code": "1234", "modes": {"night": {"arming": 5}}})
+    assert list(only_night["modes"]) == ["night"]
+    assert only_night["modes"]["night"]["arming"] == 5
+
+    # `away:` with nothing under it is a mode with the default timings.
+    import yaml
+
+    bare = ALARM_SCHEMA(yaml.safe_load("code: '1234'\nmodes:\n  away:\n"))
+    assert list(bare["modes"]) == ["away"]
+
+    # None listed: all three, as before.
+    assert list(ALARM_SCHEMA({"code": "1234"})["modes"]) == ["away", "night", "vacation"]
+
+
+def test_automatic_arming_uses_a_mode_that_exists():
+    config = {"code": "1234", "modes": {"away": {}}, "auto_arm": {"time": "23:00"}, "auto_disarm": {"time": "07:00"}}
+    parsed = ALARM_SCHEMA(config)
+    assert parsed["auto_arm"]["mode"] == "away" and parsed["auto_disarm"]["mode"] == "away"
+    with pytest.raises(Exception):
+        ALARM_SCHEMA({**config, "auto_arm": {"time": "23:00", "mode": "night"}})
+    # Night is the default whenever it exists.
+    parsed = ALARM_SCHEMA({"code": "1234", "auto_arm": {"time": "23:00"}})
+    assert parsed["auto_arm"]["mode"] == "night"
+
+
+async def test_a_mode_left_out_of_the_config_cannot_be_armed_or_shown(hass):
+    from homeassistant.components.alarm_control_panel import AlarmControlPanelEntityFeature as Feature
+
+    panel = await setup_panel(hass, ALARM_SCHEMA({"code": "1234", "modes": {"night": {"arming": 0}}}))
+    attributes = hass.states.get(ENTITY).attributes
+    assert list(attributes["modes"]) == ["night"]
+    features = attributes["supported_features"]
+    assert features & Feature.ARM_NIGHT and not features & Feature.ARM_AWAY and not features & Feature.ARM_VACATION
+    with pytest.raises(Exception):
+        await call(hass, "alarm_arm_away", code="1234")
+    with pytest.raises(Exception):
+        panel.arm("away", skip_code=True)
+    await call(hass, "alarm_arm_night", code="1234")
+    assert state(hass) == "armed_night"
+
+
+async def test_editing_the_timing_writes_a_new_state_the_card_can_see(hass):
+    """The state's attributes must not share dicts with the panel's own, or Home Assistant sees
+    "nothing changed" and keeps serving the old values after a refresh."""
+
+    from pytest_homeassistant_custom_component.common import async_capture_events
+
+    await setup_panel(hass)
+    events = async_capture_events(hass, "state_changed")
+    events.clear()
+    before = hass.states.get(ENTITY)
+    assert before.attributes["modes"]["away"]["arming"] == 30
+    await hass.services.async_call(
+        DOMAIN, "set_timing", {"entity_id": ENTITY, "mode": "away", "arming": 45}, blocking=True
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(ENTITY).attributes["modes"]["away"]["arming"] == 45
+    assert before.attributes["modes"]["away"]["arming"] == 30
+    assert [e for e in events if e.data["entity_id"] == ENTITY], "no state_changed was fired"
+
+
+async def set_enabled(hass, mode, enabled):
+    await hass.services.async_call(
+        DOMAIN, "set_mode_enabled", {"entity_id": ENTITY, "mode": mode, "enabled": enabled}, blocking=True
+    )
+    await hass.async_block_till_done()
+
+
+async def test_a_disabled_mode_cannot_be_armed_and_the_card_is_told(hass):
+    from homeassistant.components.alarm_control_panel import AlarmControlPanelEntityFeature as Feature
+
+    await setup_panel(hass)
+    assert hass.states.get(ENTITY).attributes["modes"]["vacation"]["enabled"] is True
+    await set_enabled(hass, "vacation", False)
+    attributes = hass.states.get(ENTITY).attributes
+    assert attributes["modes"]["vacation"]["enabled"] is False
+    assert attributes["modes"]["vacation"]["arming"] == 10
+    assert not attributes["supported_features"] & Feature.ARM_VACATION
+    assert attributes["supported_features"] & Feature.ARM_AWAY
+    with pytest.raises(Exception):
+        await call(hass, "alarm_arm_vacation", code="1234")
+    await set_enabled(hass, "vacation", True)
+    assert hass.states.get(ENTITY).attributes["supported_features"] & Feature.ARM_VACATION
+
+
+async def test_the_last_enabled_mode_cannot_be_disabled(hass):
+    await setup_panel(hass)
+    await set_enabled(hass, "away", False)
+    await set_enabled(hass, "vacation", False)
+    with pytest.raises(Exception):
+        await set_enabled(hass, "night", False)
+    assert hass.states.get(ENTITY).attributes["modes"]["night"]["enabled"] is True
+
+
+async def test_disabling_the_mode_the_panel_is_armed_in_disarms_it(hass):
+    await setup_panel(hass)
+    await call(hass, "alarm_arm_away", code="1234")
+    await hass.async_block_till_done()
+    await set_enabled(hass, "night", False)
+    assert state(hass) != "disarmed"
+    await set_enabled(hass, "away", False)
+    assert state(hass) == "disarmed"
+
+
+async def test_disabling_a_mode_moves_the_automatic_modes_off_it(hass):
+    config = ALARM_SCHEMA({
+        "code": "1234",
+        "auto_arm": {"time": "23:00", "mode": "away"},
+        "auto_disarm": {"time": "07:00", "mode": "away"},
+    })
+    panel = await setup_panel(hass, config)
+    await set_enabled(hass, "away", False)
+    assert panel.auto_arm_mode == "night" and panel.auto_disarm_mode == "night"
+    assert hass.states.get(ENTITY).attributes["auto"]["arm"]["mode"] == "night"
+
+
+async def test_the_enabled_flag_is_stored_and_comes_back(hass):
+    panel = await setup_panel(hass)
+    panel.set_mode_enabled("vacation", False)
+    data = panel._data()
+    assert data["modes"]["vacation"]["enabled"] is False
+
+    again = AnnikaAlarmPanel(hass, CONFIG)
+
+    class _Store:
+        async def async_load(self):
+            return data
+
+        async def async_save(self, _):
+            return None
+
+    again._store = _Store()
+    await again.async_load()
+    assert again.enabled_modes == ["away", "night"]
+    assert again.modes["vacation"]["enabled"] is False
