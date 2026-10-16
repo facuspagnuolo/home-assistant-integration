@@ -148,7 +148,7 @@ async def test_past_the_limit_the_next_warning_triggers_until_disarmed(hass, fre
     await hass.async_block_till_done()
     assert "switch.sirenas" in entities(off)
     assert panel.rules.count == 0
-    assert "Disarmed: counter reset, outputs off" in decisions(hass)[0]
+    assert decisions(hass)[0] == "Disarmed"
 
 
 async def test_a_quiet_window_starts_the_count_over(hass, freezer):
@@ -182,13 +182,14 @@ async def test_the_count_also_resets_when_the_window_passed_between_detections(h
     assert panel.rules.count == 1
 
 
-async def test_a_sensor_off_in_the_mode_is_ignored_but_logged(hass):
+async def test_a_sensor_off_in_the_mode_does_nothing_and_logs_nothing(hass):
     panel, on, off = await setup_rules(hass)
     await armed(hass, "night")
+    before = list(decisions(hass))
     detect(hass, CAM2)
     await hass.async_block_till_done()
     assert on == [] and state(hass) == "armed_night"
-    assert decisions(hass)[0] == "Camera 2 · night · ignored: off in night"
+    assert decisions(hass) == before == ["Armed · night"]
 
 
 async def test_a_sensor_inherits_the_zone_rule_and_its_own_wins(hass):
@@ -456,8 +457,7 @@ async def test_decisions_keep_only_the_latest_ones(hass):
     panel, *_ = await setup_rules(hass)
     await armed(hass, "night")
     for _ in range(alarm_rules.MAX_DECISIONS + 5):
-        detect(hass, CAM2)  # ignored in night, one line each
-        await hass.async_block_till_done()
+        panel.rules._decide("info", "something")
     assert len(hass.states.get(ENTITY).attributes["decisions"]) == alarm_rules.MAX_DECISIONS
 
 
@@ -627,3 +627,52 @@ async def test_the_spanish_texts(hass, events):
     await call(hass, "alarm_disarm", code="1234")
     await hass.async_block_till_done()
     assert _messages(events, "🔓 Alarma desactivada") == ["Desactivada"]
+
+
+async def test_arming_and_disarming_are_logged(hass):
+    await setup_rules(hass)
+    await armed(hass, "night")
+    assert decisions(hass)[0] == "Armed · night"
+    await call(hass, "alarm_disarm", code="1234")
+    await hass.async_block_till_done()
+    assert decisions(hass)[:2] == ["Disarmed", "Armed · night"]
+
+
+async def test_the_log_says_who_when_the_app_stamped_the_call(hass):
+    from custom_components.annika.actor import Actor, async_setup_actor
+
+    await setup_rules(hass)
+    async_setup_actor(hass)
+    stamps = hass.data["annika_actor"]["stamps"]
+    stamps.stamp(Actor(name="Delfi"), "alarm_control_panel", "alarm_arm_away", [ENTITY])
+    await armed(hass, "away")
+    await advance_ticks(hass)
+    assert decisions(hass)[0] == "Armed · away · by Delfi"
+    stamps.stamp(Actor(name="Facu"), "alarm_control_panel", "alarm_disarm", [ENTITY])
+    await call(hass, "alarm_disarm", code="1234")
+    await hass.async_block_till_done()
+    assert decisions(hass)[0] == "Disarmed · by Facu"
+
+
+async def advance_ticks(hass):
+    await hass.async_block_till_done()
+
+
+async def test_the_panels_own_schedule_is_logged_as_automatic(hass):
+    panel, *_ = await setup_rules(hass)
+    panel.arm("night", skip_code=True, source="auto")
+    await hass.async_block_till_done()
+    assert decisions(hass)[0] == "Armed · night · automatic"
+    panel.disarm(skip_code=True, source="auto")
+    await hass.async_block_till_done()
+    assert decisions(hass)[0] == "Disarmed · automatic"
+
+
+async def test_arming_after_a_countdown_logs_once_it_is_armed(hass, freezer):
+    slow = {**CONFIG, "modes": {**INSTANT, "away": {"arming": 30, "pending": 0}}}
+    await setup_rules(hass, slow)
+    await armed(hass, "away")
+    assert decisions(hass) == []
+    await advance(hass, freezer, 31)
+    assert state(hass) == "armed_away"
+    assert decisions(hass) == ["Armed · away"]

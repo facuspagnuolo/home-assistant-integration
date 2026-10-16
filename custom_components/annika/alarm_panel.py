@@ -248,9 +248,12 @@ class AnnikaAlarmPanel:
         self._store: Store = Store(hass, STORE_VERSION, f"{DOMAIN}.alarm_panel")
 
         self.state: str = STATE_DISARMED
+        self.restoring = False
         # The mode being armed, or armed; kept through pending and triggered so
         # the card can say what was tripped and disarming knows what to clear.
         self.mode: str | None = None
+        # Who last armed or disarmed: "auto" for the panel's own schedule, else None.
+        self.last_source: str | None = None
         self.deadline: datetime | None = None
         self.failed_attempts = 0
         self.locked_until: datetime | None = None
@@ -334,8 +337,12 @@ class AnnikaAlarmPanel:
                 else:
                     self._schedule_deadline(deadline)
         # The rules take the restored state as where they start from.
-        for trigger in list(self._triggers):
-            trigger(self.state)
+        self.restoring = True
+        try:
+            for trigger in list(self._triggers):
+                trigger(self.state)
+        finally:
+            self.restoring = False
 
     # --- reading ------------------------------------------------------------
 
@@ -478,11 +485,14 @@ class AnnikaAlarmPanel:
 
     # --- commands -----------------------------------------------------------
 
-    def arm(self, mode: str, code: str | None = None, *, skip_code: bool = False) -> None:
+    def arm(
+        self, mode: str, code: str | None = None, *, skip_code: bool = False, source: str | None = None
+    ) -> None:
         if mode not in self.enabled_modes:
             raise CodeError("invalid_mode")
         if not skip_code:
             self.check_code(code)
+        self.last_source = source
         self._cancel_deadline_timer()
         self.mode = mode
         arming = self.modes[mode]["arming"]
@@ -491,9 +501,10 @@ class AnnikaAlarmPanel:
         else:
             self._set(f"{ARMED_PREFIX}{mode}", None)
 
-    def disarm(self, code: str | None = None, *, skip_code: bool = False) -> None:
+    def disarm(self, code: str | None = None, *, skip_code: bool = False, source: str | None = None) -> None:
         if not skip_code:
             self.check_code(code)
+        self.last_source = source
         self._cancel_deadline_timer()
         self.mode = None
         self._set(STATE_DISARMED, None)
@@ -554,7 +565,7 @@ class AnnikaAlarmPanel:
         # Only the mode it is for: a house armed away or on vacation is not
         # waking up at seven.
         if self.auto_disarm_enabled and self.active and self.mode == self.auto_disarm_mode:
-            self.disarm(skip_code=True)
+            self.disarm(skip_code=True, source="auto")
 
     @callback
     def _sensor_changed(self, _event: Event) -> None:
@@ -586,7 +597,7 @@ class AnnikaAlarmPanel:
         due = self._quiet_since + timedelta(minutes=self.auto_arm_quiet)
         if due <= now:
             self._stop_waiting()
-            self.arm(self.auto_arm_mode, skip_code=True)
+            self.arm(self.auto_arm_mode, skip_code=True, source="auto")
         else:
             self._cancel_quiet = async_track_point_in_time(
                 self.hass, self._quiet_elapsed, due

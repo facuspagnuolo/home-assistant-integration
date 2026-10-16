@@ -175,9 +175,11 @@ TEXTS = {
         "fired": " · {outputs} on",
         "limit": "{sensor} · {mode} · warning limit reached, trigger",
         "trigger": "{sensor} · {mode} · trigger",
-        "ignored": "{sensor} · {mode} · ignored: off in {mode}",
         "triggered": "Alarm triggered",
-        "disarmed": "Disarmed: counter reset, outputs off",
+        "armed": "Armed · {mode}{by}",
+        "disarmed": "Disarmed{by}",
+        "by": " · by {actor}",
+        "by_auto": " · automatic",
         "title_warning": "⚠️ Alarm warning",
         "title_trigger": "🚨 Alarm triggered",
         "title_disarmed": "🔓 Alarm disarmed",
@@ -185,6 +187,7 @@ TEXTS = {
         "notify_reminder": "Reminder #{n}",
         "notify_disarmed_by": "Disarmed by {actor}",
         "notify_disarmed": "Disarmed",
+        "notify_disarmed_auto": "Disarmed automatically",
         "title_test": "Alarm notification test",
         "message_test": "This is a test of the alarm notifications",
         "expired": "No detections for {minutes} min: warning counter reset",
@@ -198,9 +201,11 @@ TEXTS = {
         "fired": " · {outputs} encendido",
         "limit": "{sensor} · {mode} · límite de avisos alcanzado, disparo",
         "trigger": "{sensor} · {mode} · disparo",
-        "ignored": "{sensor} · {mode} · ignorado: apagado en {mode}",
         "triggered": "Alarma disparada",
-        "disarmed": "Desarmada: contador en cero, salidas apagadas",
+        "armed": "Armada · {mode}{by}",
+        "disarmed": "Desarmada{by}",
+        "by": " · por {actor}",
+        "by_auto": " · automática",
         "title_warning": "⚠️ Aviso de alarma",
         "title_trigger": "🚨 Alarma disparada",
         "title_disarmed": "🔓 Alarma desactivada",
@@ -208,6 +213,7 @@ TEXTS = {
         "notify_reminder": "Recordatorio #{n}",
         "notify_disarmed_by": "Desactivada por {actor}",
         "notify_disarmed": "Desactivada",
+        "notify_disarmed_auto": "Desactivada automáticamente",
         "title_test": "Prueba de notificación de la alarma",
         "message_test": "Esta es una prueba de las notificaciones de la alarma",
         "expired": "Sin detecciones por {minutes} min: contador de avisos en cero",
@@ -268,6 +274,7 @@ class AnnikaAlarmRules:
         self.notify_disarm: bool = notification["disarm"]
         self._cancel_repeat: Callable[[], None] | None = None
         self._reminders = 0
+        self._arming_actor: str | None = None
         self.zones = [_Zone(zone) for zone in config["zones"]]
         self.outputs = [_Output(output) for output in config["outputs"]]
         self.decisions: list[dict] = []
@@ -294,6 +301,7 @@ class AnnikaAlarmRules:
             self._cancel_sensors = async_track_state_change_event(
                 self.hass, list(self._by_entity), self._sensor_changed
             )
+        self._last_state = self.panel.state
         self.panel.on_change(self._panel_changed)
 
     async def async_stop(self, _event=None) -> None:
@@ -445,8 +453,9 @@ class AnnikaAlarmRules:
         rule = sensor.rule(mode)
         values = {"sensor": sensor.name, "mode": self._text(f"mode_{mode}")}
         if rule == "off":
-            self._decide("ignored", self._text("ignored", **values))
-        elif rule == "trigger":
+            # Off means off: nothing to decide, nothing to log.
+            return
+        if rule == "trigger":
             self._decide("trigger", self._text("trigger", **values))
             self.panel.trigger()
         else:
@@ -511,10 +520,19 @@ class AnnikaAlarmRules:
     @callback
     def _panel_changed(self, new: str) -> None:
         previous, self._last_state = self._last_state, new
-        if previous is None or previous == new:
+        if previous is None or previous == new or self.panel.restoring:
             return
         if new != "triggered":
             self._stop_repeat()
+        if new == "arming":
+            self._arming_actor = self._actor_for("alarm_arm")
+        if new.startswith("armed_"):
+            actor = self._arming_actor if previous == "arming" else self._actor_for("alarm_arm")
+            self._arming_actor = None
+            self._decide(
+                "info",
+                self._text("armed", mode=self._text(f"mode_{new[len('armed_'):]}"), by=self._by(actor)),
+            )
         if new == "triggered":
             self._decide("trigger", self._text("triggered"))
             for output in self.outputs:
@@ -532,15 +550,16 @@ class AnnikaAlarmRules:
             had_outputs = any(output.on for output in self.outputs)
             for output in self.outputs:
                 self._switch_off(output)
-            if previous != "disarmed" and (had_outputs or previous in ("triggered", "pending")):
-                self._decide("info", self._text("disarmed"))
-            if self.notify_disarm and self.notify_trigger and previous not in ("disarmed", "arming"):
-                actor = self._disarmed_by()
-                message = (
-                    self._text("notify_disarmed_by", actor=actor)
-                    if actor
-                    else self._text("notify_disarmed")
-                )
+            self._arming_actor = None
+            actor = self._actor_for("alarm_disarm")
+            self._decide("info", self._text("disarmed", by=self._by(actor)))
+            if self.notify_disarm and self.notify_trigger and previous != "arming":
+                if actor:
+                    message = self._text("notify_disarmed_by", actor=actor)
+                elif self.panel.last_source == "auto":
+                    message = self._text("notify_disarmed_auto")
+                else:
+                    message = self._text("notify_disarmed")
                 self._send(self._text("title_disarmed"), message)
 
     # --- outputs ------------------------------------------------------------
@@ -618,8 +637,17 @@ class AnnikaAlarmRules:
             )
         self.panel.notify_listeners()
 
-    def _disarmed_by(self) -> str | None:
-        """The Annika app user who just disarmed the panel, when the app said so.
+    def _by(self, actor: str | None) -> str:
+        """" · by Delfi", " · automatic", or nothing when nobody is known."""
+
+        if actor:
+            return self._text("by", actor=actor)
+        if self.panel.last_source == "auto":
+            return self._text("by_auto")
+        return ""
+
+    def _actor_for(self, service_prefix: str) -> str | None:
+        """The Annika app user who just armed or disarmed the panel, when the app said so.
 
         The app stamps the call (see actor.py) and the stamp is claimed when the call
         starts, before the panel moves: that record is the one to read. A keypad, an
@@ -630,7 +658,7 @@ class AnnikaAlarmRules:
         action = last.action if last is not None else None
         if action is None or action.domain != "alarm_control_panel":
             return None
-        if not action.service.startswith("alarm_disarm"):
+        if not action.service.startswith(service_prefix):
             return None
         if self.panel.entity_id and self.panel.entity_id not in action.entity_ids:
             return None
