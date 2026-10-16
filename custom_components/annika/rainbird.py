@@ -65,6 +65,13 @@ PARALLEL_ATTEMPTS = 16
 PORT_TIMEOUT_SECONDS = 2
 # Networks bigger than this are only searched around Home Assistant's address.
 MAX_NETWORK_PREFIX = 22
+# Home Assistant OS also reports its internal container networks (docker0,
+# hassio, bridges, veth pairs). The controller is never in them, and in some
+# units they are the only adapters Home Assistant reports.
+INTERNAL_ADAPTER_PREFIXES = ("docker", "hassio", "br-", "veth")
+# Prefix of the network searched around the controller's last known address
+# when no reported network contains it.
+FALLBACK_PREFIX = 24
 
 
 @dataclass
@@ -251,7 +258,7 @@ class RainbirdReconnector:
         password = entry.data.get(CONF_PASSWORD)
         old_host = entry.data.get(CONF_HOST)
         mac = _norm_mac(entry.data.get(CONF_MAC))
-        networks = await self._async_networks()
+        networks = await self._async_networks(old_host)
         result = _SearchResult(networks=[str(net) for net in networks])
         if not password or not networks:
             return result
@@ -334,10 +341,12 @@ class RainbirdReconnector:
             _LOGGER.warning("Rain Bird search found a new controller at %s and added it", host)
         return False
 
-    async def _async_networks(self) -> list[ipaddress.IPv4Network]:
+    async def _async_networks(self, old_host: str | None = None) -> list[ipaddress.IPv4Network]:
         networks: list[ipaddress.IPv4Network] = []
         for adapter in await network.async_get_adapters(self._hass):
             if not adapter["enabled"]:
+                continue
+            if str(adapter.get("name", "")).startswith(INTERNAL_ADAPTER_PREFIXES):
                 continue
             for info in adapter["ipv4"]:
                 net = ipaddress.ip_network(
@@ -349,6 +358,16 @@ class RainbirdReconnector:
                     )
                 if not net.is_loopback and net not in networks:
                     networks.append(net)
+
+        # Home Assistant may not report the LAN at all (an adapter without an
+        # IPv4 or disabled). The controller was last seen on a LAN address, so
+        # always search around it.
+        try:
+            last_known = ipaddress.IPv4Address(old_host) if old_host else None
+        except ValueError:
+            last_known = None
+        if last_known is not None and not any(last_known in net for net in networks):
+            networks.append(ipaddress.ip_network(f"{last_known}/{FALLBACK_PREFIX}", strict=False))
         return networks
 
     async def _async_notify(self, title: str, message: str, data: dict) -> None:

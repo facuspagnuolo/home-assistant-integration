@@ -206,3 +206,57 @@ def test_it_is_off_unless_the_unit_turns_it_on():
     base = {"api_url": "https://api.example.com", "unit_id": "u1", "webhook_secret": "s"}
     assert CONFIG_SCHEMA({"annika": base})["annika"]["rainbird_reconnect"] is False
     assert CONFIG_SCHEMA({"annika": {**base, "rainbird_reconnect": True}})["annika"]["rainbird_reconnect"] is True
+
+
+async def test_searches_around_the_last_known_address_when_the_lan_is_not_reported(
+    hass, controller_at, annika_events
+):
+    """Only Home Assistant's internal container networks are reported."""
+    adapters = [
+        {
+            "name": "docker0",
+            "enabled": True,
+            "ipv4": [{"address": "172.30.232.1", "network_prefix": 23}],
+            "ipv6": [],
+        },
+        {
+            "name": "hassio",
+            "enabled": True,
+            "ipv4": [{"address": "172.30.32.1", "network_prefix": 23}],
+            "ipv6": [],
+        },
+        {"name": "end0", "enabled": False, "ipv4": [], "ipv6": []},
+    ]
+    entry = rainbird_entry(hass)
+    reconnector = rb.RainbirdReconnector(hass)
+
+    with patch.object(rb.network, "async_get_adapters", AsyncMock(return_value=adapters)):
+        networks = await reconnector._async_networks(OLD_HOST)
+        await search(hass, reconnector, entry)
+
+    assert [str(net) for net in networks] == ["192.0.2.0/24"]
+    assert entry.data["host"] == NEW_HOST
+    assert annika_events.await_args.args[0]["title"] == "Rain Bird reconectado"
+
+
+async def test_internal_container_networks_are_never_searched(hass):
+    adapters = [
+        {
+            "name": "hassio",
+            "enabled": True,
+            "ipv4": [{"address": "172.30.32.1", "network_prefix": 23}],
+            "ipv6": [],
+        },
+        {
+            "name": "end0",
+            "enabled": True,
+            "ipv4": [{"address": "192.0.2.1", "network_prefix": 28}],
+            "ipv6": [],
+        },
+    ]
+    reconnector = rb.RainbirdReconnector(hass)
+
+    with patch.object(rb.network, "async_get_adapters", AsyncMock(return_value=adapters)):
+        networks = await reconnector._async_networks(OLD_HOST)
+
+    assert [str(net) for net in networks] == ["192.0.2.0/28"]
