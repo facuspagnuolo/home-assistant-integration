@@ -23,6 +23,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
 from .irrigation import (
+    MAX_MANUAL_MINUTES,
     MAX_RAIN_DELAY_DAYS,
     MAX_SUNRISE_OFFSET_MINUTES,
     MAX_ZONE_MINUTES,
@@ -30,6 +31,7 @@ from .irrigation import (
     STATUS_DISABLED,
     STATUSES,
     UNIQUE_ENABLED,
+    UNIQUE_MANUAL_MINUTES,
     UNIQUE_NEXT_START,
     UNIQUE_RAIN_DELAY_AFTER_RAIN,
     UNIQUE_RUN,
@@ -224,6 +226,30 @@ class IrrigationRainDelayAfterRainNumber(_IrrigationNumber):
         return self._irrigation.default_rain_delay_after_rain()
 
 
+class IrrigationManualMinutesNumber(_IrrigationNumber):
+    """Safeguard for watering by hand: a Rain Bird zone switched on by hand closes after this.
+
+    The schedule does not use it: each group has its own minutes per season.
+    """
+
+    _attr_name = "Irrigation Manual Limit"
+    _attr_unique_id = UNIQUE_MANUAL_MINUTES
+    _attr_icon = "mdi:timer-alert-outline"
+    _attr_native_min_value = 1
+    _attr_native_max_value = MAX_MANUAL_MINUTES
+    _attr_native_step = 5
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+
+    def _read(self) -> float | None:
+        return self._irrigation.settings.manual_minutes
+
+    def _write(self, value: float) -> None:
+        self._irrigation.settings.manual_minutes = value
+
+    def _default(self) -> float:
+        return self._irrigation.default_manual_minutes()
+
+
 # --- start ------------------------------------------------------------------
 
 
@@ -332,8 +358,17 @@ class IrrigationStatusSensor(_IrrigationEntity, SensorEntity):
         entity = irrigation.entity_id
         today = dt_util.now().date()
         season = irrigation.season_for(today)
+        next_season = (
+            irrigation.season_for(dt_util.as_local(irrigation.next_run).date())
+            if irrigation.next_run else None
+        )
+        next_program = irrigation.program(next_season) if next_season else []
         return {
             "next_run": irrigation.next_run.isoformat() if irrigation.next_run else None,
+            "next_run_duration_seconds": (
+                sum(minutes * 60 for _, minutes in next_program)
+                + max(0, len(next_program) - 1) * irrigation.pause_seconds
+            ) if irrigation.next_run else None,
             "last_run": irrigation.last_run.isoformat() if irrigation.last_run else None,
             "last_result": irrigation.last_result,
             "current_season": season.key if season else None,
@@ -373,6 +408,7 @@ class IrrigationStatusSensor(_IrrigationEntity, SensorEntity):
                 "sunrise_offset": entity("number", UNIQUE_SUNRISE_OFFSET),
                 "start_time": entity("time", UNIQUE_START_TIME),
                 "rain_delay_after_rain": entity("number", UNIQUE_RAIN_DELAY_AFTER_RAIN),
+                "manual_minutes": entity("number", UNIQUE_MANUAL_MINUTES),
                 "run": entity("button", UNIQUE_RUN),
                 "stop": entity("button", UNIQUE_STOP),
                 "rain_sensor": irrigation.rain_sensor,
@@ -431,4 +467,7 @@ def numbers(irrigation: AnnikaIrrigation) -> list[NumberEntity]:
     entities.append(IrrigationSunriseOffsetNumber(irrigation))
     if irrigation.rain_sensor and irrigation.rain_delay:
         entities.append(IrrigationRainDelayAfterRainNumber(irrigation))
+    # Only Rain Bird zones can be given a time limit when switched on by hand.
+    if irrigation.rainbird_entries():
+        entities.append(IrrigationManualMinutesNumber(irrigation))
     return entities

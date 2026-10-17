@@ -12,6 +12,12 @@
 //   entity: sensor.annika_cameras
 //   name: Cameras               # optional
 //   language: es                # optional; by default the Home Assistant language
+//
+// Live view: every camera plays its fluent (low resolution) stream, which is
+// what a Raspberry Pi can play for all of them at once. A camera with a clear
+// (high resolution) stream has an HD button that switches that camera alone
+// to it. Both streams are found from the camera's entity (`camera.x_clear` or
+// `camera.x_fluent`, as the Reolink integration names them).
 ;(() => {
   const CARD = 'annika-cameras-card'
   const SERVICE_DOMAIN = 'annika'
@@ -53,6 +59,8 @@
       cannot_play: 'This clip cannot be played',
       notified: 'Notified',
       just_now: 'just now',
+      hd: 'HD',
+      hd_hint: 'Watch this camera in high definition (uses more of the system)',
     },
     es: {
       missing: 'No se encontró la entidad: {entity}',
@@ -64,7 +72,7 @@
       time: 'Rango horario',
       from: 'desde',
       to: 'hasta',
-      mode_away: 'Afuera',
+      mode_away: 'Salida',
       mode_night: 'Noche',
       mode_vacation: 'Vacaciones',
       before: 'Segundos antes',
@@ -90,6 +98,8 @@
       cannot_play: 'No se puede reproducir este clip',
       notified: 'Avisado',
       just_now: 'recién',
+      hd: 'HD',
+      hd_hint: 'Ver esta cámara en alta definición (usa más recursos)',
     },
   }
 
@@ -103,12 +113,18 @@
 
   const fill = (text, values) => text.replace(/\{(\w+)\}/g, (_, key) => values[key] ?? '')
 
+  // A dropdown, drawn like the irrigation card's (see SELECT_CSS in annika-common.js).
+  const selectBox = (select) => `<span class="annika-select">${select}</span>`
+
   class AnnikaCamerasCard extends HTMLElement {
     setConfig(config) {
       if (!config.entity) throw new Error(`${CARD}: "entity" is required`)
       this._config = config
       this._structure = ''
       this._live = {}
+      this._liveEntity = {}
+      // The cameras the person asked to see in HD: none until they ask.
+      this._hd = new Set()
       this._playing = null
       this._render()
     }
@@ -178,14 +194,38 @@
       return `<ha-icon icon="${name}"></ha-icon>`
     }
 
+    // The two streams of a camera: fluent (what plays by default) and clear
+    // (HD, when the camera has both). Named from the camera's entity, which is
+    // either one of them. Keep HA's numeric suffix for cameras of the same
+    // model (camera.x_clear_2 pairs with camera.x_fluent_2).
+    // A camera that is neither has just its own stream.
+    _streams(camera) {
+      const match = /^(camera\..+)_(clear|fluent)(_\d+)?$/.exec(camera.entity)
+      const states = (this._hass && this._hass.states) || {}
+      if (!match) return { fluent: camera.entity, clear: null }
+      const suffix = match[3] || ''
+      const clear = `${match[1]}_clear${suffix}`
+      const fluent = `${match[1]}_fluent${suffix}`
+      if (!states[clear] || !states[fluent]) return { fluent: camera.entity, clear: null }
+      return { fluent, clear }
+    }
+
+    _liveEntityFor(camera) {
+      const streams = this._streams(camera)
+      return streams.clear && this._hd.has(camera.id) ? streams.clear : streams.fluent
+    }
+
     _camerasHtml(config, t) {
       const tiles = config.cameras.map((camera) => {
+        const hd = this._streams(camera).clear
+          ? `<button class="hd${this._hd.has(camera.id) ? ' on' : ''}" data-hd="${escapeHtml(camera.id)}" aria-pressed="${this._hd.has(camera.id)}" title="${escapeHtml(t.hd_hint)}">${escapeHtml(t.hd)}</button>`
+          : ''
         const chips = KINDS.filter((kind) => camera.sensors[kind]).map((kind) =>
           `<span class="chip${this._sensorOn(camera.sensors[kind]) ? ' on' : ''}" data-sensor-state="${escapeHtml(camera.sensors[kind])}" title="${escapeHtml(t[kind])}">${this._icon(ICONS[kind])}</span>`
         ).join('')
         return `<ha-card class="tile">
           <div class="live" data-live="${escapeHtml(camera.id)}"><span class="placeholder">${escapeHtml(camera.name)}</span></div>
-          <div class="caption"><span>${escapeHtml(camera.name)}</span><span class="chips">${chips}</span></div>
+          <div class="caption"><span>${escapeHtml(camera.name)}</span><span class="chips">${hd}${chips}</span></div>
         </ha-card>`
       }).join('')
       return `<div class="wide"><div class="sec" data-heading="${escapeHtml(t.cameras)}">${escapeHtml(t.cameras)}</div><div class="tiles">${tiles}</div></div>`
@@ -243,7 +283,7 @@
           if (!group.kinds.includes(kind)) return '<td class="none" data-label="">—</td>'
           const action = group.rules[kind] || 'off'
           const options = ACTIONS.map((a) => option(a, a, a === action)).join('')
-          return `<td data-label="${escapeHtml(t[kind])}"><select class="rule ${action}" data-group="${escapeHtml(group.id)}" data-kind="${kind}">${options}</select></td>`
+          return `<td data-label="${escapeHtml(t[kind])}">${selectBox(`<select class="rule${action === 'off' ? ' off' : ''}" data-group="${escapeHtml(group.id)}" data-kind="${kind}">${options}</select>`)}</td>`
         }).join('')
         return `<tr class="group"><td class="name"><b>${escapeHtml(group.name)}</b></td>${cells}</tr>`
       }
@@ -256,7 +296,7 @@
           const effective = selected || (group ? group.rules[kind] : null) || 'off'
           const inherit = group ? option('', effective, selected === null, t[effective]) : ''
           const options = inherit + ACTIONS.map((a) => option(a, a, a === selected)).join('')
-          return `<td data-label="${escapeHtml(t[kind])}"><select class="rule ${effective}${group && selected === null ? ' inherit' : ''}" data-camera="${escapeHtml(camera.id)}" data-kind="${kind}">${options}</select></td>`
+          return `<td data-label="${escapeHtml(t[kind])}">${selectBox(`<select class="rule${effective === 'off' ? ' off' : ''}${group && selected === null ? ' inherit' : ''}" data-camera="${escapeHtml(camera.id)}" data-kind="${kind}">${options}</select>`)}</td>`
         }).join('')
         const mark = own ? ` <span class="own">${escapeHtml(t.own_rule)}</span>` : ''
         return `<tr class="${group ? 'member' : ''}"><td class="name">${escapeHtml(camera.name)}${mark}</td>${cells}</tr>`
@@ -275,7 +315,7 @@
     _ago(iso) {
       const seconds = Math.round((new Date(iso) - Date.now()) / 1000)
       if (Math.abs(seconds) < 60) return this._texts.just_now
-      const lang = String((this._hass && this._hass.language) || 'en')
+      const lang = String((window.Annika && window.Annika.language(this._hass, this._config)) || (this._hass && this._hass.language) || 'en')
       const format = new Intl.RelativeTimeFormat(lang, { numeric: 'auto' })
       for (const [unit, size] of [['day', 86400], ['hour', 3600], ['minute', 60]]) {
         if (Math.abs(seconds) >= size) return format.format(Math.round(seconds / size), unit)
@@ -335,6 +375,7 @@
       const attrs = stateObj.attributes
       const config = attrs.config
       if (!config) return
+      // HD updates its own tile directly; it must not rebuild the other streams.
       const key = JSON.stringify([config, this._alarmModes, attrs.clips, attrs.image_base, t.cameras, this._playing && [this._playing.url, this._playing.error]])
       if (!force && key === this._structure) return
       this._structure = key
@@ -354,19 +395,24 @@
           .annika-cams ha-card.panel.table { padding: 4px 8px; overflow-x: auto; }
           .annika-cams .muted { color: var(--secondary-text-color); font-size: 13px; }
           .annika-cams .note { margin-top: 10px; }
-          .annika-cams input[type=number], .annika-cams input[type=time], .annika-cams select {
+          .annika-cams input[type=number], .annika-cams input[type=time] {
             background: var(--secondary-background-color, transparent); color: var(--primary-text-color);
             border: 1px solid var(--divider-color); border-radius: 6px; padding: 4px 6px; font: inherit; font-size: 14px; color-scheme: dark light; }
           .annika-cams input[type=number] { width: 64px; }
           .annika-cams input:disabled { opacity: .45; }
           ${(window.Annika && window.Annika.CHECKBOX_CSS) || ''}
+          ${(window.Annika && window.Annika.SELECT_CSS) || ''}
 
           .annika-cams .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
           .annika-cams ha-card.tile { display: block; overflow: hidden; }
           .annika-cams .live { aspect-ratio: 16 / 9; background: #000; display: flex; align-items: center; justify-content: center; color: var(--secondary-text-color); overflow: hidden; }
           .annika-cams .live > * { width: 100%; }
           .annika-cams .caption { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; gap: 8px; }
-          .annika-cams .chips { display: inline-flex; gap: 6px; }
+          .annika-cams .chips { display: inline-flex; align-items: center; gap: 6px; }
+          /* HD: the pill of the alarm's mode buttons, small. */
+          .annika-cams .hd { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 999px;
+            padding: 2px 10px; margin-right: 4px; font: inherit; font-size: 12px; cursor: pointer; }
+          .annika-cams .hd.on { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); }
           .annika-cams .chip { --mdc-icon-size: 18px; display: inline-flex; color: var(--disabled-color); transition: color .2s; }
           .annika-cams .chip.on { color: var(--primary-color); filter: drop-shadow(0 0 4px color-mix(in srgb, var(--primary-color) 70%, transparent)); }
 
@@ -387,15 +433,12 @@
           .annika-cams th { text-align: left; font-weight: 400; font-size: 13px; color: var(--secondary-text-color); padding: 10px 8px; }
           .annika-cams td { padding: 8px; border-top: 1px solid var(--divider-color); vertical-align: middle; }
           .annika-cams td.none { color: var(--disabled-color); }
-          .annika-cams select.rule { width: 100%; min-width: 120px; }
-          .annika-cams select.rule.inherit { border-style: dashed; opacity: .75; }
+          .annika-cams td > .annika-select { display: block; }
+          .annika-cams .annika-select select.rule { min-width: 120px; }
+          .annika-cams select.rule.inherit { opacity: .55; }
           .annika-cams .does tr.member td.name { padding-left: 20px; }
           .annika-cams .does .own { color: var(--primary-color); font-size: 12px; margin-left: 6px; }
           .annika-cams select.rule.off { color: var(--secondary-text-color); }
-          .annika-cams select.rule.record { color: var(--primary-color); border-color: color-mix(in srgb, var(--primary-color) 45%, transparent);
-            background: color-mix(in srgb, var(--primary-color) 12%, transparent); }
-          .annika-cams select.rule.record_notify { color: var(--warning-color, #f5b335); border-color: color-mix(in srgb, var(--warning-color, #f5b335) 45%, transparent);
-            background: color-mix(in srgb, var(--warning-color, #f5b335) 12%, transparent); }
 
           .annika-cams .carousel { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 8px; scroll-snap-type: x proximity; }
           .annika-cams .clip { flex: none; width: 220px; background: var(--ha-card-background, var(--card-background-color)); border: 0; border-radius: var(--ha-card-border-radius, 0); padding: 0;
@@ -432,7 +475,7 @@
             .annika-cams .does td.name { grid-column: 1 / -1; font-weight: 500; }
             .annika-cams .does td.none { display: none; }
             .annika-cams .does td[data-label]::before { content: attr(data-label); display: block; font-size: 12px; color: var(--secondary-text-color); margin-bottom: 2px; }
-            .annika-cams select.rule { min-width: 0; }
+            .annika-cams .annika-select select.rule { min-width: 0; }
             .annika-cams .clip { width: 180px; }
           }
         </style>
@@ -473,19 +516,25 @@
       for (const camera of config.cameras) {
         const holder = this.querySelector(`[data-live="${CSS.escape(camera.id)}"]`)
         if (!holder) continue
-        if (this._live[camera.id]) {
+        // Fluent unless this camera was asked for in HD; a stream already
+        // playing for that choice is put back, not restarted.
+        const entity = this._liveEntityFor(camera)
+        if (this._live[camera.id] && this._liveEntity[camera.id] === entity) {
           holder.replaceChildren(this._live[camera.id])
           continue
         }
         if (!window.loadCardHelpers) continue
         try {
           const helpers = await window.loadCardHelpers()
-          if (this._live[camera.id]) continue
+          if (this._live[camera.id] && this._liveEntity[camera.id] === entity) continue
           const el = await helpers.createCardElement({
-            type: 'picture-entity', entity: camera.entity, camera_view: 'live', show_name: false, show_state: false,
+            type: 'picture-entity', entity, camera_view: 'live', show_name: false, show_state: false,
           })
+          // Changed its mind while this was building: the next render builds the right one.
+          if (this._liveEntityFor(camera) !== entity) continue
           el.hass = this._hass
           this._live[camera.id] = el
+          this._liveEntity[camera.id] = entity
           const target = this.querySelector(`[data-live="${CSS.escape(camera.id)}"]`)
           if (target) target.replaceChildren(el)
         } catch (err) {
@@ -549,6 +598,17 @@
           // A mode the alarm has switched off has no box: it keeps what it had.
           return box ? box.checked : (this._stateObj.attributes.config.when.armed_modes || []).includes(mode)
         })
+
+      on('[data-hd]', 'click', (el) => {
+        const id = el.dataset.hd
+        const camera = config.cameras.find((camera) => camera.id === id)
+        if (!camera) return
+        if (this._hd.has(id)) this._hd.delete(id)
+        else this._hd.add(id)
+        el.classList.toggle('on', this._hd.has(id))
+        el.setAttribute('aria-pressed', String(this._hd.has(id)))
+        this._mountLive({ cameras: [camera] })
+      })
 
       // An empty value gives the detection back to the camera's group.
       on('select[data-camera]', 'change', (el) =>

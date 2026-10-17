@@ -215,9 +215,9 @@
           .title { font-size: var(--ha-card-header-font-size, 24px); color: var(--ha-card-header-color, var(--primary-text-color)); margin: 0 0 8px; line-height: 1.3; }
           .row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--divider-color); }
           .row:last-child { border-bottom: none; }
-          /* Same colors as Home Assistant's user badge (ha-user-badge), so
-             it follows the theme the way the stock logbook avatars do. */
-          .badge { flex: none; width: 24px; height: 24px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background-color: var(--light-primary-color); color: var(--text-light-primary-color, var(--primary-text-color)); font-size: 12px; font-weight: 500; }
+          /* The card's colour, as the alarm's keypad and the pool's checkboxes
+             have it: the theme's primary (green), with the theme's text colour on it. */
+          .badge { flex: none; width: 24px; height: 24px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background-color: var(--primary-color); color: var(--text-primary-color, #fff); font-size: 12px; font-weight: 500; }
           .text { flex: 1; min-width: 0; }
           .actor { color: var(--primary-text-color); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
           .entity { color: var(--secondary-text-color); font-size: 0.9em; }

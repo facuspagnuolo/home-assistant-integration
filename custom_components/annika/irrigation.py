@@ -15,6 +15,7 @@ the structure — seasons, groups and zones — is a deployment decision:
         start:
           sunrise_offset: "-02:00"     # or `time: "05:30"`
         rain_delay_after_rain: 1       # days, starting value
+        manual_minutes: 15             # a zone switched on by hand closes after this, starting value
         groups:
           - Goteo
           - Aspersores
@@ -41,6 +42,14 @@ A month no season covers simply does not water. Rain Bird zones are opened
 with the controller's own duration (`rainbird.start_irrigation`), so a valve
 closes on time even if Home Assistant goes down halfway through a run; any
 other switch is turned on and off.
+
+A Rain Bird zone someone switches on by hand (from the card, the app or the
+controller's switch) has no duration of its own: the `rainbird` integration
+runs it for its "default irrigation time" option. `manual_minutes` is that
+time, edited from the card as a safeguard so a zone watered by hand is never
+left open by mistake. It is written to the option of each Rain Bird entry the
+zones belong to, never while a run is in progress (the integration reloads when
+its options change), and only when the zones are Rain Bird's.
 """
 
 from __future__ import annotations
@@ -55,6 +64,7 @@ from typing import Any, Callable
 
 import voluptuous as vol
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_ON, SUN_EVENT_SUNRISE
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
@@ -81,6 +91,11 @@ START_TIME = "time"
 START_MODES = (START_SUNRISE, START_TIME)
 
 MAX_ZONE_MINUTES = 120
+# The longest a zone switched on by hand may run: what `rainbird.start_irrigation` takes (a day).
+MAX_MANUAL_MINUTES = 1440
+RAINBIRD_DOMAIN = "rainbird"
+# The Rain Bird option with the minutes a zone runs when it is switched on without a duration.
+RAINBIRD_DURATION_OPTION = "duration"
 MAX_SUNRISE_OFFSET_MINUTES = 360
 MAX_RAIN_DELAY_DAYS = 14
 # How far ahead to look for the next day that waters. Two weeks covers any
@@ -154,6 +169,9 @@ IRRIGATION_SCHEMA = vol.All(
             ),
             vol.Optional("rain_delay_after_rain", default=0): vol.All(
                 vol.Coerce(int), vol.Range(min=0, max=MAX_RAIN_DELAY_DAYS)
+            ),
+            vol.Optional("manual_minutes", default=15): vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=MAX_MANUAL_MINUTES)
             ),
             vol.Required("groups"): vol.All(
                 cv.ensure_list,
@@ -230,6 +248,7 @@ class IrrigationSettings:
     sunrise_offset_minutes: float | None = None
     start_time: time | None = None
     rain_delay_after_rain: float | None = None
+    manual_minutes: float | None = None
 
 
 class AnnikaIrrigation:
@@ -296,6 +315,9 @@ class AnnikaIrrigation:
     def default_rain_delay_after_rain(self) -> int:
         return self.config["rain_delay_after_rain"]
 
+    def default_manual_minutes(self) -> int:
+        return self.config["manual_minutes"]
+
     def _season_config(self, season: IrrigationSeason) -> dict:
         return next(item for item in self.config["seasons"] if slugify(item["name"]) == season.key)
 
@@ -323,6 +345,7 @@ class AnnikaIrrigation:
         if self.settings.enabled is False and self._running:
             self.stop("disabled")
         self._reschedule()
+        self._sync_manual_minutes()
         self.notify()
 
     # --- lifecycle ---------------------------------------------------------
@@ -497,7 +520,44 @@ class AnnikaIrrigation:
         self._finish(result, self._text(f"log_{outcome}", season=season.name))
         await self._send_event(self._text(f"title_{outcome}"), self._text("message", season=season.name))
         self._reschedule()
+        # A change made during the run waited for it to end.
+        self._sync_manual_minutes()
         self.notify()
+
+    # --- watering by hand ----------------------------------------------------
+
+    def rainbird_entries(self) -> list[ConfigEntry]:
+        """The Rain Bird config entries the zones belong to."""
+
+        registry = er.async_get(self.hass)
+        entries: dict[str, ConfigEntry] = {}
+        for zone in self.zones:
+            item = registry.async_get(zone.entity_id)
+            if item is None or item.platform != RAINBIRD_DOMAIN or not item.config_entry_id:
+                continue
+            entry = self.hass.config_entries.async_get_entry(item.config_entry_id)
+            if entry is not None:
+                entries[entry.entry_id] = entry
+        return list(entries.values())
+
+    @callback
+    def _sync_manual_minutes(self) -> None:
+        """Give the Rain Bird zones switched on by hand the card's time limit.
+
+        Changing an option makes the `rainbird` integration reload, so it is
+        only touched when the value differs, and not while a run is in
+        progress: it waits for the run to end (see `_async_run`).
+        """
+
+        minutes = self.settings.manual_minutes
+        if minutes is None or self._running:
+            return
+        minutes = int(minutes)
+        for entry in self.rainbird_entries():
+            if entry.options.get(RAINBIRD_DURATION_OPTION) != minutes:
+                self.hass.config_entries.async_update_entry(
+                    entry, options={**entry.options, RAINBIRD_DURATION_OPTION: minutes}
+                )
 
     async def _wait(self, seconds: float) -> bool:
         """Sleep, or wake early and return True when the run is aborted."""
@@ -663,6 +723,7 @@ UNIQUE_START_MODE = "annika_irrigation_start_mode"
 UNIQUE_SUNRISE_OFFSET = "annika_irrigation_sunrise_offset"
 UNIQUE_START_TIME = "annika_irrigation_start_time"
 UNIQUE_RAIN_DELAY_AFTER_RAIN = "annika_irrigation_rain_delay_after_rain"
+UNIQUE_MANUAL_MINUTES = "annika_irrigation_manual_minutes"
 UNIQUE_RUN = "annika_irrigation_run"
 UNIQUE_STOP = "annika_irrigation_stop"
 UNIQUE_NEXT_START = "annika_irrigation_next_start"

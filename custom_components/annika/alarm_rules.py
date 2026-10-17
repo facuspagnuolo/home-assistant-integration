@@ -194,7 +194,7 @@ TEXTS = {
     },
     "es": {
         "logbook_name": "Alarma",
-        "mode_away": "afuera",
+        "mode_away": "salida",
         "mode_night": "noche",
         "mode_vacation": "vacaciones",
         "warning": "{sensor} · {mode} · aviso {n} de {limit}{fired}",

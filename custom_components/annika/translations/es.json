@@ -9,7 +9,7 @@
       },
       "alarm_mode": {
         "state": {
-          "away": "Afuera",
+          "away": "Salida",
           "night": "Noche",
           "vacation": "Vacaciones"
         }

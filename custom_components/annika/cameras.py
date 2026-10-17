@@ -20,6 +20,12 @@ not a thing of its own: a detection that is not recorded is not notified.
             vehicle: binary_sensor.e1_outdoor_se_poe_vehicle
             rules: {person: record_notify, vehicle: record}
 
+`entity` is the stream clips and snapshots are taken from (the clear one gives
+the best pictures). The card's live view plays the fluent stream of the same
+camera instead, which is what a Raspberry Pi can play for every camera at
+once, and a camera that has both streams can be switched to HD from the card,
+one at a time (see annika-cameras-card).
+
 Cameras can be grouped. A camera names its `group`, and the group sets what its
 cameras do for each detection; a camera inherits it unless it has a rule of its
 own for that detection (the way a sensor inherits its zone's rule in the alarm):
