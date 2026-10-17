@@ -15,6 +15,7 @@ the structure — seasons, groups and zones — is a deployment decision:
         start:
           sunrise_offset: "-02:00"     # or `time: "05:30"`
         rain_delay_after_rain: 1       # days, starting value
+        manual_minutes: 15             # a zone switched on by hand closes after this, starting value
         groups:
           - Goteo
           - Aspersores
@@ -41,12 +42,31 @@ A month no season covers simply does not water. Rain Bird zones are opened
 with the controller's own duration (`rainbird.start_irrigation`), so a valve
 closes on time even if Home Assistant goes down halfway through a run; any
 other switch is turned on and off.
+
+A Rain Bird zone someone switches on by hand from outside Annika (the app, the
+controller's switch) has no duration of its own: the `rainbird` integration
+runs it for its "default irrigation time" option. `manual_minutes` is the
+limit of every zone watered by hand, edited from the card as a safeguard so a
+zone is never left open by mistake. It is written to the option of each Rain
+Bird entry the zones belong to (never while a run or a manual watering is in
+progress: the integration reloads when its options change), and it is what the
+manual switches below honour.
+
+Each Rain Bird zone also gets a manual switch of Annika's own, which is what the
+card's zone tiles press. Switched on, the zone stays on until the switch is
+turned off or `manual_minutes` is up, whichever is first. The controller takes
+at most 255 minutes per start, so a longer watering is started again, block
+after block, shortly before each one ends. Every block is started for what is
+left of the limit, so a valve still closes on time if Home Assistant goes
+down. The limit is read as it is edited: changing it while a zone is on moves
+its end (and closes it at once if it has already passed).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -55,12 +75,15 @@ from typing import Any, Callable
 
 import voluptuous as vol
 
-from homeassistant.const import STATE_ON, SUN_EVENT_SUNRISE
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import STATE_OFF, STATE_ON, SUN_EVENT_SUNRISE
 from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import (
     async_track_point_in_time,
+    async_track_point_in_utc_time,
     async_track_state_change_event,
     async_track_time_change,
 )
@@ -81,6 +104,21 @@ START_TIME = "time"
 START_MODES = (START_SUNRISE, START_TIME)
 
 MAX_ZONE_MINUTES = 120
+# The longest a single start of a zone may run. The controller takes the
+# minutes of a manual start in one byte: pyrainbird writes 1440 as `5A0`, which
+# the controller reads as `5A` (90 minutes), and 256 or more come out wrong the
+# same way. 255 is the most it can be told.
+MAX_MANUAL_BLOCK_MINUTES = 255
+# The longest a zone watered by hand may stay on in all: a day. Past one start
+# (255 minutes) Annika starts it again, block after block, until the limit.
+MAX_MANUAL_MINUTES = 1440
+# A block is renewed this long before it ends, so the zone is not left closed between two.
+MANUAL_RENEW_BEFORE = timedelta(seconds=30)
+# Right after Annika starts a block the zone may blink: that is not someone closing it.
+MANUAL_SETTLE = timedelta(seconds=15)
+RAINBIRD_DOMAIN = "rainbird"
+# The Rain Bird option with the minutes a zone runs when it is switched on without a duration.
+RAINBIRD_DURATION_OPTION = "duration"
 MAX_SUNRISE_OFFSET_MINUTES = 360
 MAX_RAIN_DELAY_DAYS = 14
 # How far ahead to look for the next day that waters. Two weeks covers any
@@ -154,6 +192,9 @@ IRRIGATION_SCHEMA = vol.All(
             ),
             vol.Optional("rain_delay_after_rain", default=0): vol.All(
                 vol.Coerce(int), vol.Range(min=0, max=MAX_RAIN_DELAY_DAYS)
+            ),
+            vol.Optional("manual_minutes", default=15): vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=MAX_MANUAL_MINUTES)
             ),
             vol.Required("groups"): vol.All(
                 cv.ensure_list,
@@ -230,6 +271,17 @@ class IrrigationSettings:
     sunrise_offset_minutes: float | None = None
     start_time: time | None = None
     rain_delay_after_rain: float | None = None
+    manual_minutes: float | None = None
+
+
+@dataclass
+class _ManualSession:
+    """A zone someone switched on from Annika's manual switch."""
+
+    started: datetime = field(default_factory=dt_util.utcnow)
+    opened_at: datetime = field(default_factory=dt_util.utcnow)
+    block_end: datetime = field(default_factory=dt_util.utcnow)
+    cancel: Callable[[], None] | None = None
 
 
 class AnnikaIrrigation:
@@ -273,6 +325,8 @@ class AnnikaIrrigation:
         self._running = False
         self._abort = asyncio.Event()
         self._abort_reason: str | None = None
+        # Zones switched on by hand from Annika, by entity id.
+        self._manual: dict[str, _ManualSession] = {}
 
     # --- defaults the entities start from --------------------------------
 
@@ -295,6 +349,9 @@ class AnnikaIrrigation:
 
     def default_rain_delay_after_rain(self) -> int:
         return self.config["rain_delay_after_rain"]
+
+    def default_manual_minutes(self) -> int:
+        return self.config["manual_minutes"]
 
     def _season_config(self, season: IrrigationSeason) -> dict:
         return next(item for item in self.config["seasons"] if slugify(item["name"]) == season.key)
@@ -323,6 +380,12 @@ class AnnikaIrrigation:
         if self.settings.enabled is False and self._running:
             self.stop("disabled")
         self._reschedule()
+        self._sync_manual_minutes()
+        # A zone on by hand follows the limit as it is edited, up or down.
+        for zone in self.zones:
+            session = self._manual.get(zone.entity_id)
+            if session is not None:
+                self._manual_plan(zone, session)
         self.notify()
 
     # --- lifecycle ---------------------------------------------------------
@@ -336,12 +399,20 @@ class AnnikaIrrigation:
             self._unsubscribers.append(
                 async_track_time_change(self.hass, self._midnight_rain_check, hour=0, minute=5, second=0)
             )
+        self._unsubscribers.append(
+            async_track_state_change_event(
+                self.hass, [zone.entity_id for zone in self.zones], self._zone_state_changed
+            )
+        )
         self._reschedule()
 
     async def async_stop(self, _event: Event | None = None) -> None:
         for unsubscribe in self._unsubscribers:
             unsubscribe()
         self._unsubscribers.clear()
+        for entity_id in list(self._manual):
+            self._manual_cancel(entity_id)
+            await self._close(next(zone for zone in self.zones if zone.entity_id == entity_id))
         if self._unschedule:
             self._unschedule()
             self._unschedule = None
@@ -421,7 +492,7 @@ class AnnikaIrrigation:
             return SKIP_RAIN
         if self.rain_delay and _as_float(self._state(self.rain_delay)) > 0:
             return SKIP_RAIN_DELAY
-        if self._running or any(self._state(zone.entity_id) == STATE_ON for zone in self.zones):
+        if self._running or self._manual or any(self._state(zone.entity_id) == STATE_ON for zone in self.zones):
             return SKIP_BUSY
         return None
 
@@ -497,7 +568,174 @@ class AnnikaIrrigation:
         self._finish(result, self._text(f"log_{outcome}", season=season.name))
         await self._send_event(self._text(f"title_{outcome}"), self._text("message", season=season.name))
         self._reschedule()
+        # A change made during the run waited for it to end.
+        self._sync_manual_minutes()
         self.notify()
+
+    # --- watering by hand ----------------------------------------------------
+
+    def rainbird_entries(self) -> list[ConfigEntry]:
+        """The Rain Bird config entries the zones belong to."""
+
+        registry = er.async_get(self.hass)
+        entries: dict[str, ConfigEntry] = {}
+        for zone in self.zones:
+            item = registry.async_get(zone.entity_id)
+            if item is None or item.platform != RAINBIRD_DOMAIN or not item.config_entry_id:
+                continue
+            entry = self.hass.config_entries.async_get_entry(item.config_entry_id)
+            if entry is not None:
+                entries[entry.entry_id] = entry
+        return list(entries.values())
+
+    def manual_zones(self) -> list[IrrigationZone]:
+        """The zones with a manual switch of their own: the Rain Bird ones."""
+
+        registry = er.async_get(self.hass)
+        return [
+            zone
+            for zone in self.zones
+            if (item := registry.async_get(zone.entity_id)) is not None and item.platform == RAINBIRD_DOMAIN
+        ]
+
+    def manual_limit(self) -> int:
+        minutes = self.settings.manual_minutes
+        return int(minutes if minutes is not None else self.default_manual_minutes())
+
+    def manual_deadline(self, entity_id: str) -> datetime | None:
+        """When a zone watered by hand closes by itself, or None if it is not."""
+
+        session = self._manual.get(entity_id)
+        if session is None:
+            return None
+        return session.started + timedelta(minutes=self.manual_limit())
+
+    async def async_manual_on(self, zone: IrrigationZone) -> None:
+        """Water a zone until someone switches it off, or until the manual limit."""
+
+        if self._running:
+            raise HomeAssistantError(self._text("manual_busy"))
+        self._manual_cancel(zone.entity_id)
+        session = self._manual[zone.entity_id] = _ManualSession()
+        try:
+            await self._manual_start_block(zone, session)
+        except Exception:
+            self._manual.pop(zone.entity_id, None)
+            self.notify()
+            raise
+        self._manual_plan(zone, session)
+        self.notify()
+
+    async def async_manual_off(self, zone: IrrigationZone) -> None:
+        if zone.entity_id not in self._manual:
+            if self._running and self.current_zone == zone.entity_id:
+                self.stop("stopped")  # the schedule has it open: stopping the run closes it
+                return
+            await self._close(zone)
+            return
+        self._manual_cancel(zone.entity_id)
+        await self._close(zone)
+        self._sync_manual_minutes()
+        self.notify()
+
+    async def _manual_start_block(self, zone: IrrigationZone, session: _ManualSession) -> None:
+        """Start the zone for what is left of the limit, up to what the controller takes."""
+
+        left = (session.started + timedelta(minutes=self.manual_limit()) - dt_util.utcnow()).total_seconds()
+        minutes = max(1, min(MAX_MANUAL_BLOCK_MINUTES, math.ceil(left / 60)))
+        session.opened_at = dt_util.utcnow()
+        await self._open(zone, minutes)
+        session.block_end = dt_util.utcnow() + timedelta(minutes=minutes)
+
+    @callback
+    def _manual_plan(self, zone: IrrigationZone, session: _ManualSession) -> None:
+        """Wake up when the block needs renewing or the limit is reached, whichever is first."""
+
+        if session.cancel is not None:
+            session.cancel()
+            session.cancel = None
+        deadline = session.started + timedelta(minutes=self.manual_limit())
+        wake = min(deadline, session.block_end - MANUAL_RENEW_BEFORE)
+
+        @callback
+        def fire(_now: datetime) -> None:
+            session.cancel = None
+            self.hass.async_create_task(self._async_manual_tick(zone, session))
+
+        session.cancel = async_track_point_in_utc_time(self.hass, fire, max(wake, dt_util.utcnow()))
+
+    async def _async_manual_tick(self, zone: IrrigationZone, session: _ManualSession) -> None:
+        if self._manual.get(zone.entity_id) is not session:
+            return
+        now = dt_util.utcnow()
+        slack = timedelta(seconds=1)
+        deadline = session.started + timedelta(minutes=self.manual_limit())
+        if now >= deadline - slack:
+            self._manual_cancel(zone.entity_id)
+            await self._close(zone)
+            self._sync_manual_minutes()
+            name = zone.name or zone.entity_id
+            minutes = self.manual_limit()
+            self._logbook(self._text("log_manual_limit", zone=name, minutes=minutes))
+            await self._send_event(
+                self._text("title_manual_limit"), self._text("message_manual_limit", zone=name, minutes=minutes)
+            )
+            self.notify()
+            return
+        if now >= session.block_end - MANUAL_RENEW_BEFORE - slack:
+            try:
+                await self._manual_start_block(zone, session)
+            except Exception:  # noqa: BLE001 — a controller that does not answer: the zone is not running by us any more
+                _LOGGER.exception("Annika irrigation: could not renew %s", zone.entity_id)
+                self._manual_cancel(zone.entity_id)
+                self.notify()
+                return
+        if self._manual.get(zone.entity_id) is session:
+            self._manual_plan(zone, session)
+            self.notify()
+
+    def _manual_cancel(self, entity_id: str) -> None:
+        session = self._manual.pop(entity_id, None)
+        if session is not None and session.cancel is not None:
+            session.cancel()
+            session.cancel = None
+
+    @callback
+    def _zone_state_changed(self, event: Event) -> None:
+        """Someone closed a zone watered by hand (the app, the controller): stop renewing it."""
+
+        entity_id = event.data["entity_id"]
+        session = self._manual.get(entity_id)
+        new_state = event.data.get("new_state")
+        if session is None or new_state is None or new_state.state != STATE_OFF:
+            return
+        if dt_util.utcnow() - session.opened_at < MANUAL_SETTLE:
+            return
+        self._manual_cancel(entity_id)
+        self._sync_manual_minutes()
+        self.notify()
+
+    @callback
+    def _sync_manual_minutes(self) -> None:
+        """Give the Rain Bird zones switched on by hand the card's time limit.
+
+        Changing an option makes the `rainbird` integration reload, so it is
+        only touched when the value differs, and not while a run or a zone
+        watered by hand is in progress: it waits for it to end.
+        """
+
+        minutes = self.settings.manual_minutes
+        if minutes is None or self._running or self._manual:
+            return
+        # What the controller takes in one start: a zone switched on from outside
+        # Annika (the app, the controller) closes by it. Annika's own manual
+        # switch goes past it, block after block.
+        minutes = max(1, min(int(minutes), MAX_MANUAL_BLOCK_MINUTES))
+        for entry in self.rainbird_entries():
+            if entry.options.get(RAINBIRD_DURATION_OPTION) != minutes:
+                self.hass.config_entries.async_update_entry(
+                    entry, options={**entry.options, RAINBIRD_DURATION_OPTION: minutes}
+                )
 
     async def _wait(self, seconds: float) -> bool:
         """Sleep, or wake early and return True when the run is aborted."""
@@ -625,6 +863,10 @@ TEXTS = {
         f"skip_{SKIP_RAIN}": "it is raining",
         f"skip_{SKIP_RAIN_DELAY}": "rain delay active",
         f"skip_{SKIP_BUSY}": "a zone was already running",
+        "manual_busy": "The schedule is running: stop it before watering by hand",
+        "log_manual_limit": "Manual watering of {zone} closed after {minutes} min (limit)",
+        "title_manual_limit": "🚱 Manual watering closed",
+        "message_manual_limit": "{zone} reached the {minutes} min limit",
     },
     "es": {
         "logbook_name": "Riego",
@@ -644,6 +886,10 @@ TEXTS = {
         f"skip_{SKIP_RAIN}": "está lloviendo",
         f"skip_{SKIP_RAIN_DELAY}": "demora por lluvia activa",
         f"skip_{SKIP_BUSY}": "ya había una zona regando",
+        "manual_busy": "El programa está regando: detenelo antes de regar a mano",
+        "log_manual_limit": "Riego manual de {zone} cerrado a los {minutes} min (tope)",
+        "title_manual_limit": "🚱 Riego manual cerrado",
+        "message_manual_limit": "{zone} llegó al tope de {minutes} min",
     },
 }
 
@@ -663,6 +909,7 @@ UNIQUE_START_MODE = "annika_irrigation_start_mode"
 UNIQUE_SUNRISE_OFFSET = "annika_irrigation_sunrise_offset"
 UNIQUE_START_TIME = "annika_irrigation_start_time"
 UNIQUE_RAIN_DELAY_AFTER_RAIN = "annika_irrigation_rain_delay_after_rain"
+UNIQUE_MANUAL_MINUTES = "annika_irrigation_manual_minutes"
 UNIQUE_RUN = "annika_irrigation_run"
 UNIQUE_STOP = "annika_irrigation_stop"
 UNIQUE_NEXT_START = "annika_irrigation_next_start"
@@ -674,3 +921,7 @@ def unique_day(season: IrrigationSeason, weekday: str) -> str:
 
 def unique_minutes(season: IrrigationSeason, group: IrrigationGroup) -> str:
     return f"annika_irrigation_{season.key}_{group.key}_minutes"
+
+
+def unique_manual(zone: IrrigationZone) -> str:
+    return f"annika_irrigation_manual_{slugify(zone.entity_id.split('.', 1)[1])}"

@@ -8,9 +8,9 @@
 // entity, so the card needs no entity list: change the seasons in the
 // integration's YAML, restart, and the card follows.
 //
-//   Top row, small tiles on one line: the timetable's on/off, the switch
-//   itself (to turn it on or off by hand), run now and stop; under them,
-//   what comes next
+//   Top row, small tiles: the timetable's on/off, the switch itself (to turn
+//   it on or off by hand), run now and stop; four in a row, two by two on a
+//   phone; under them, what comes next
 //   Then, full width:
 //     Timetable: one row per season, a checkbox and a time for each run, and
 //       the minutes each run lasts. Today's season is marked.
@@ -45,6 +45,9 @@
   const CARD = 'annika-pool-filter-card'
   const DEFAULT_HISTORY_HOURS = 48
   const DEFAULT_COLOR = 'primary'
+  const NARROW_WIDTH = 640
+  const TILE_COLUMNS = 4
+  const NARROW_TILE_COLUMNS = 2
 
   // The card's own texts, by Home Assistant language (see Annika.textsFor in
   // annika-common.js). `headings:` and `labels:` in the card config override
@@ -62,6 +65,9 @@
         runs: 'Runs',
         now: 'today',
         minutes: 'min',
+        tile_schedule: 'Schedule',
+        tile_run: 'Run now',
+        tile_stop: 'Stop',
         automation: 'Run by',
         on: 'on',
         off: 'off',
@@ -80,6 +86,9 @@
         runs: 'Horarios',
         now: 'hoy',
         minutes: 'min',
+        tile_schedule: 'Programa',
+        tile_run: 'Ejecutar ahora',
+        tile_stop: 'Detener',
         automation: 'Lo maneja',
         on: 'prendida',
         off: 'apagada',
@@ -121,6 +130,25 @@
       this._render()
     }
 
+    // The tiles live inside a stock card's shadow root, out of reach of this
+    // card's CSS, so their columns follow the width here: two by two on a phone.
+    connectedCallback() {
+      this.style.display = 'block'
+      if (this._observer || typeof ResizeObserver === 'undefined') return
+      this._observer = new ResizeObserver(() => {
+        const narrow = this.clientWidth > 0 && this.clientWidth <= NARROW_WIDTH
+        if (narrow === this._narrow) return
+        this._narrow = narrow
+        if (this._hass) this.hass = this._hass
+      })
+      this._observer.observe(this)
+    }
+
+    disconnectedCallback() {
+      if (this._observer) this._observer.disconnect()
+      this._observer = undefined
+    }
+
     set hass(hass) {
       this._hass = hass
       this._resolveTexts()
@@ -149,7 +177,7 @@
 
     _structureNow() {
       const state = this._hass.states[this._entity]
-      return (state ? structureOf(state.attributes) : 'missing') + `|${this._texts.lang}`
+      return (state ? structureOf(state.attributes) : 'missing') + `|${this._texts.lang}|${this._narrow ? 'narrow' : 'wide'}`
     }
 
     getCardSize() {
@@ -195,7 +223,8 @@
       const entities = attributes.entities || {}
       const color = this._config.color === undefined ? DEFAULT_COLOR : this._config.color
       const headings = this._headings
-      const tile = (entity, options = {}) => tileConfig({ entity, color }, options)
+      const tile = (entity, options = {}, name) => tileConfig({ entity, name, color }, options)
+      const labels = this._labels
 
       // One row of tiles, small: the timetable's own toggle, the switch itself,
       // and the two actions. Tapping a toggle tile flips it.
@@ -204,13 +233,14 @@
         headingConfig(headings.schedule),
         gridConfig(
           [
-            tile(entities.automation || entities.enabled),
+            // With an automation of the house's own, the toggle is that automation.
+            tile(entities.automation || entities.enabled, {}, entities.automation ? undefined : labels.tile_schedule),
             tile(entities.switch),
             // A button's state is when it was last pressed: nothing worth a line.
-            tile(entities.run, press(entities.run)),
-            tile(entities.stop, press(entities.stop)),
+            tile(entities.run, press(entities.run), labels.tile_run),
+            tile(entities.stop, press(entities.stop), labels.tile_stop),
           ],
-          4,
+          this._narrow ? NARROW_TILE_COLUMNS : TILE_COLUMNS,
         ),
       ]
 

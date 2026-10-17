@@ -171,8 +171,7 @@ TEXTS = {
         "mode_away": "away",
         "mode_night": "night",
         "mode_vacation": "vacation",
-        "warning": "{sensor} · {mode} · warning {n} of {limit}{fired}",
-        "fired": " · {outputs} on",
+        "warning": "{sensor} · {mode} · warning {n} of {limit}",
         "limit": "{sensor} · {mode} · warning limit reached, trigger",
         "trigger": "{sensor} · {mode} · trigger",
         "triggered": "Alarm triggered",
@@ -194,11 +193,10 @@ TEXTS = {
     },
     "es": {
         "logbook_name": "Alarma",
-        "mode_away": "afuera",
+        "mode_away": "salida",
         "mode_night": "noche",
         "mode_vacation": "vacaciones",
-        "warning": "{sensor} · {mode} · aviso {n} de {limit}{fired}",
-        "fired": " · {outputs} encendido",
+        "warning": "{sensor} · {mode} · aviso {n} de {limit}",
         "limit": "{sensor} · {mode} · límite de avisos alcanzado, disparo",
         "trigger": "{sensor} · {mode} · disparo",
         "triggered": "Alarma disparada",
@@ -475,7 +473,6 @@ class AnnikaAlarmRules:
         fired = [output for output in self.outputs if output.warning_enabled]
         for output in fired:
             self._switch_on(output, output.warning_seconds)
-        names = ", ".join(output.name for output in fired)
         self._decide(
             "warning",
             self._text(
@@ -483,7 +480,6 @@ class AnnikaAlarmRules:
                 **values,
                 n=self.count,
                 limit=self.limit,
-                fired=self._text("fired", outputs=names) if names else "",
             ),
         )
         if self.notify_warning:

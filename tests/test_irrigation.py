@@ -19,6 +19,7 @@ from homeassistant.helpers.sun import get_astral_event_date
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
     async_capture_events,
     async_fire_time_changed,
     mock_restore_cache_with_extra_data,
@@ -532,6 +533,222 @@ async def test_rain_bird_zones_run_on_the_controller_own_duration(hass, world, w
     assert started == [{"entity_id": "switch.rb_front", "duration": 18}]
 
 
+# --- watering by hand -----------------------------------------------------------
+
+
+def rainbird_zone(hass: HomeAssistant, duration: int | None = 6) -> tuple[MockConfigEntry, dict]:
+    """A Rain Bird entry with one zone, and a unit configured to water it."""
+
+    options = {} if duration is None else {"duration": duration}
+    entry = MockConfigEntry(domain="rainbird", options=options)
+    entry.add_to_hass(hass)
+    er.async_get(hass).async_get_or_create(
+        "switch", "rainbird", "zone-9", suggested_object_id="rb_front", config_entry=entry
+    )
+    hass.states.async_set("switch.rb_front", STATE_OFF)
+    return entry, {**CONFIG, "zones": [{"entity": "switch.rb_front", "group": "Goteo"}]}
+
+
+def test_the_manual_limit_starts_at_fifteen_minutes_and_allows_a_day():
+    assert irr.IRRIGATION_SCHEMA(CONFIG)["manual_minutes"] == 15
+    assert irr.IRRIGATION_SCHEMA({**CONFIG, "manual_minutes": 255})["manual_minutes"] == 255
+    assert irr.IRRIGATION_SCHEMA({**CONFIG, "manual_minutes": 1440})["manual_minutes"] == 1440
+    for value in (0, 1441):
+        with pytest.raises(vol.Invalid):
+            irr.IRRIGATION_SCHEMA({**CONFIG, "manual_minutes": value})
+
+
+async def test_the_manual_limit_is_the_rain_bird_default_duration(hass, world):
+    entry, config = rainbird_zone(hass, duration=6)
+    await start(hass, config)
+
+    limit = entity(hass, "number", irr.UNIQUE_MANUAL_MINUTES)
+    assert hass.states.get(limit).state == "15"
+    assert entry.options["duration"] == 15
+
+    await hass.services.async_call("number", "set_value", {"entity_id": limit, "value": 40}, blocking=True)
+
+    assert entry.options["duration"] == 40
+    status = hass.states.get(entity(hass, "sensor", irr.UNIQUE_STATUS))
+    assert status.attributes["entities"]["manual_minutes"] == limit
+
+
+async def test_the_manual_limit_is_set_even_when_rain_bird_has_no_duration_yet(hass, world):
+    entry, config = rainbird_zone(hass, duration=None)
+    await start(hass, config)
+
+    assert entry.options["duration"] == 15
+
+
+async def test_the_manual_limit_does_not_touch_rain_bird_when_it_is_already_that(hass, world):
+    entry, config = rainbird_zone(hass, duration=15)
+    with patch.object(hass.config_entries, "async_update_entry") as update:
+        await start(hass, config)
+
+    update.assert_not_called()
+    assert entry.options["duration"] == 15
+
+
+async def test_the_manual_limit_waits_for_a_run_in_progress(hass, world, waits, annika_events, freezer):
+    entry, config = rainbird_zone(hass, duration=6)
+    hass.services.async_register("rainbird", "start_irrigation", AsyncMock())
+    irrigation = await start(hass, config)
+    limit = entity(hass, "number", irr.UNIQUE_MANUAL_MINUTES)
+
+    seen: list[int] = []
+
+    async def change_it_halfway() -> None:
+        await hass.services.async_call("number", "set_value", {"entity_id": limit, "value": 40}, blocking=True)
+        # Recorded, not asserted here: a run swallows what fails inside it.
+        seen.append(entry.options["duration"])
+
+    waits["during"][1] = change_it_halfway
+    await water_at(hass, freezer, irrigation.next_run)
+
+    # The integration reloads when its options change: not with a valve open.
+    assert seen == [15]
+    assert entry.options["duration"] == 40
+
+
+async def test_the_manual_limit_survives_a_restart(hass, world):
+    entry, config = rainbird_zone(hass, duration=15)
+    number = {"native_value": 90, "native_unit_of_measurement": "min", "native_min_value": 1, "native_max_value": 255, "native_step": 5}
+    mock_restore_cache_with_extra_data(
+        hass, [(State("number.irrigation_manual_limit", "90"), number)]
+    )
+    irrigation = await start(hass, config)
+
+    assert irrigation.settings.manual_minutes == 90
+    assert entry.options["duration"] == 90
+
+
+async def test_a_saved_day_limit_is_restored_but_controller_starts_are_capped(hass, world):
+    entry, config = rainbird_zone(hass, duration=15)
+    number = {"native_value": 1440, "native_unit_of_measurement": "min", "native_min_value": 1, "native_max_value": 1440, "native_step": 5}
+    mock_restore_cache_with_extra_data(
+        hass, [(State("number.irrigation_manual_limit", "1440"), number)]
+    )
+    irrigation = await start(hass, config)
+
+    assert irrigation.settings.manual_minutes == 1440
+    assert entry.options["duration"] == 255
+
+
+@pytest.fixture
+async def manual(hass, world):
+    entry, config = rainbird_zone(hass, duration=15)
+    calls = []
+
+    async def open_zone(call):
+        calls.append(dict(call.data))
+        hass.states.async_set("switch.rb_front", STATE_ON)
+
+    async def close_zone(zone):
+        calls.append({"off": zone.entity_id})
+        hass.states.async_set(zone.entity_id, STATE_OFF)
+
+    hass.services.async_register("rainbird", "start_irrigation", open_zone)
+    irrigation = await start(hass, config)
+    switch = entity(hass, "switch", irr.unique_manual(irrigation.zones[0]))
+    limit = entity(hass, "number", irr.UNIQUE_MANUAL_MINUTES)
+    with patch.object(irrigation, "_close", side_effect=close_zone):
+        yield irrigation, entry, switch, limit, calls
+        await irrigation.async_stop()
+
+
+async def test_manual_tile_mapping_and_switch_follow_the_zone(hass, manual):
+    irrigation, _, switch, _, calls = manual
+    status = hass.states.get(entity(hass, "sensor", irr.UNIQUE_STATUS))
+    assert status.attributes["zones"][0]["manual"] == switch
+    await hass.services.async_call("switch", "turn_on", {"entity_id": switch}, blocking=True)
+    await hass.async_block_till_done()
+    assert calls == [{"entity_id": "switch.rb_front", "duration": 15}]
+    assert hass.states.get(switch).state == STATE_ON
+    assert hass.states.get(switch).attributes["manual_until"] == irrigation.manual_deadline("switch.rb_front").isoformat()
+    await hass.services.async_call("switch", "turn_off", {"entity_id": switch}, blocking=True)
+    await hass.async_block_till_done()
+    assert calls[-1] == {"off": "switch.rb_front"}
+    assert hass.states.get(switch).state == STATE_OFF
+    assert irrigation.manual_deadline("switch.rb_front") is None
+
+
+async def test_manual_watering_closes_at_the_limit(hass, manual, freezer, annika_events):
+    irrigation, _, switch, _, calls = manual
+    await hass.services.async_call("switch", "turn_on", {"entity_id": switch}, blocking=True)
+    deadline = irrigation.manual_deadline("switch.rb_front")
+    await water_at(hass, freezer, deadline)
+    assert calls[-1] == {"off": "switch.rb_front"}
+    assert irrigation.manual_deadline("switch.rb_front") is None
+    assert annika_events.call_count == 1
+
+
+@pytest.mark.parametrize("minutes", [1, 10, 40])
+async def test_manual_limit_can_change_while_watering(hass, manual, freezer, annika_events, minutes):
+    irrigation, entry, switch, limit, calls = manual
+    await hass.services.async_call("switch", "turn_on", {"entity_id": switch}, blocking=True)
+    began = dt_util.utcnow()
+    await water_at(hass, freezer, began + timedelta(minutes=5))
+    await hass.services.async_call("number", "set_value", {"entity_id": limit, "value": minutes}, blocking=True)
+    assert entry.options["duration"] == 15  # no integration reload with the valve open
+    if minutes == 40:
+        await water_at(hass, freezer, began + timedelta(minutes=14, seconds=30))
+        assert calls[-1] == {"entity_id": "switch.rb_front", "duration": 26}
+        await water_at(hass, freezer, began + timedelta(minutes=15))
+        assert hass.states.get(switch).state == STATE_ON
+    await water_at(hass, freezer, began + timedelta(minutes=max(5, minutes)))
+    assert calls[-1] == {"off": "switch.rb_front"}
+    assert irrigation.manual_deadline("switch.rb_front") is None
+    assert entry.options["duration"] == minutes
+
+
+async def test_manual_watering_renews_long_runs_and_stops_after_external_off(hass, manual, freezer):
+    irrigation, _, switch, limit, calls = manual
+    await hass.services.async_call("number", "set_value", {"entity_id": limit, "value": 1440}, blocking=True)
+    await hass.services.async_call("switch", "turn_on", {"entity_id": switch}, blocking=True)
+    began = dt_util.utcnow()
+    assert calls[-1]["duration"] == 255
+    await water_at(hass, freezer, began + timedelta(minutes=254, seconds=30))
+    assert len(calls) == 2
+    assert calls[-1]["duration"] == 255
+    await water_at(hass, freezer, began + timedelta(minutes=256))
+    hass.states.async_set("switch.rb_front", STATE_OFF)
+    await hass.async_block_till_done()
+    assert irrigation.manual_deadline("switch.rb_front") is None
+    await water_at(hass, freezer, began + timedelta(minutes=510))
+    assert len(calls) == 2
+
+
+async def test_manual_watering_blocks_a_schedule_even_before_the_zone_state_updates(hass, manual):
+    irrigation, _, switch, _, _ = manual
+    hass.services.async_register("rainbird", "start_irrigation", AsyncMock())
+    await hass.services.async_call("switch", "turn_on", {"entity_id": switch}, blocking=True)
+    assert irrigation.run_now() is False
+
+
+async def test_stopping_irrigation_closes_manual_zones(hass, manual):
+    irrigation, _, switch, _, calls = manual
+    await hass.services.async_call("switch", "turn_on", {"entity_id": switch}, blocking=True)
+    await irrigation.async_stop()
+    assert calls[-1] == {"off": "switch.rb_front"}
+    assert irrigation.manual_deadline("switch.rb_front") is None
+
+
+async def test_failed_manual_start_does_not_keep_a_session(hass, manual):
+    irrigation, _, switch, _, _ = manual
+    hass.services.async_register("rainbird", "start_irrigation", AsyncMock(side_effect=RuntimeError("offline")))
+    with pytest.raises(RuntimeError, match="offline"):
+        await hass.services.async_call("switch", "turn_on", {"entity_id": switch}, blocking=True)
+    assert irrigation.manual_deadline("switch.rb_front") is None
+
+
+async def test_there_is_no_manual_limit_without_rain_bird_zones(hass, world):
+    await start(hass)
+
+    assert er.async_get(hass).async_get_entity_id("number", DOMAIN, irr.UNIQUE_MANUAL_MINUTES) is None
+    status = hass.states.get(entity(hass, "sensor", irr.UNIQUE_STATUS))
+    assert status.attributes["entities"]["manual_minutes"] is None
+
+
 # --- rain delay -----------------------------------------------------------------
 
 
@@ -682,3 +899,27 @@ async def test_without_an_automation_the_next_start_is_the_next_run(hass, world)
 
     next_start = hass.states.get(entity(hass, "sensor", irr.UNIQUE_NEXT_START)).state
     assert dt_util.parse_datetime(next_start) == irrigation.next_run
+
+
+async def test_next_run_duration_includes_each_zone_and_pauses(hass, world):
+    await start(hass)
+
+    status = hass.states.get(entity(hass, "sensor", irr.UNIQUE_STATUS))
+    assert status.attributes["next_run_duration_seconds"] == (18 + 8 + 8 + 18) * 60 + 3 * 20
+
+
+async def test_next_run_duration_uses_the_upcoming_season(hass, world, freezer):
+    freezer.move_to(local(2025, 2, 28, 10, 0))
+    config = {
+        **CONFIG,
+        "seasons": [
+            CONFIG["seasons"][0],
+            {**CONFIG["seasons"][1], "months": [3, 6, 7, 8]},
+        ],
+    }
+    await start(hass, config)
+
+    status = hass.states.get(entity(hass, "sensor", irr.UNIQUE_STATUS))
+    # Today's season is summer, but the next scheduled run is in winter.
+    assert status.attributes["current_season"] == "verano"
+    assert status.attributes["next_run_duration_seconds"] == (12 + 4 + 4 + 12) * 60 + 3 * 20

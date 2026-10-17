@@ -323,6 +323,45 @@ async def test_a_recording_that_fails_leaves_no_clip_and_no_notification(hass, t
     sent.assert_not_called()
 
 
+async def test_an_error_that_is_not_a_home_assistant_error_still_falls_back_to_no_lookback(
+    hass, tmp_path, sent
+):
+    # PyAV raises its own errors (a ValueError subclass for EINVAL) from a bad segment.
+    async_mock_service(hass, "camera", "snapshot")
+    calls = []
+
+    async def record(call):
+        calls.append(dict(call.data))
+        if "lookback" in call.data:
+            raise ValueError("Invalid argument: returned 22")
+
+    hass.services.async_register("camera", "record", record)
+    cameras = await start(hass, tmp_path)
+    await detect(hass, PERSON)
+
+    assert ["lookback" in c for c in calls] == [True, False]
+    assert len(cameras.clips) == 1
+
+
+async def test_a_failed_recording_does_not_hold_the_cooldown(hass, tmp_path, sent, freezer):
+    async_mock_service(hass, "camera", "snapshot")
+    fail = True
+
+    async def record(call):
+        if fail:
+            raise ValueError("Invalid argument: returned 22")
+
+    hass.services.async_register("camera", "record", record)
+    cameras = await start(hass, tmp_path)
+    await detect(hass, PERSON)
+    assert not cameras.clips
+
+    fail = False
+    freezer.tick(timedelta(seconds=5))     # well inside the 120 s cooldown
+    await detect(hass, VEHICLE)
+    assert len(cameras.clips) == 1
+
+
 async def test_a_failed_snapshot_still_records_without_a_picture(hass, tmp_path, services, sent):
     async def snapshot(call):
         raise HomeAssistantError("no picture")

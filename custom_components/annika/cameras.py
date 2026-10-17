@@ -20,6 +20,12 @@ not a thing of its own: a detection that is not recorded is not notified.
             vehicle: binary_sensor.e1_outdoor_se_poe_vehicle
             rules: {person: record_notify, vehicle: record}
 
+`entity` is the stream clips and snapshots are taken from (the clear one gives
+the best pictures). The card's live view plays the fluent stream of the same
+camera instead, which is what a Raspberry Pi can play for every camera at
+once, and a camera that has both streams can be switched to HD from the card,
+one at a time (see annika-cameras-card).
+
 Cameras can be grouped. A camera names its `group`, and the group sets what its
 cameras do for each detection; a camera inherits it unless it has a rule of its
 own for that detection (the way a sensor inherits its zone's rule in the alarm):
@@ -70,7 +76,6 @@ from typing import Any, Callable
 import voluptuous as vol
 
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change
 from homeassistant.helpers.storage import Store
@@ -434,6 +439,8 @@ class AnnikaCameras:
             # A camera with no stream running has no past to look back into.
             recorded = await self._async_call("record", data)
         if not recorded:
+            # A failed capture must not hold the cooldown: the next detection tries again.
+            self._last.pop(camera.id, None)
             return
         clip = {
             "id": uuid.uuid4().hex[:8],
@@ -455,7 +462,7 @@ class AnnikaCameras:
     async def _async_call(self, service: str, data: dict) -> bool:
         try:
             await self.hass.services.async_call("camera", service, data, blocking=True)
-        except (HomeAssistantError, vol.Invalid, OSError) as error:
+        except Exception as error:  # noqa: BLE001 — PyAV raises its own errors (EINVAL on a bad segment) that are not OSError; any failure must fall through to the fallback
             _LOGGER.warning("Annika cameras: camera.%s failed for %s: %s", service, data["entity_id"], error)
             return False
         return True

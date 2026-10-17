@@ -161,6 +161,61 @@
     }
   `
 
+  // The dropdown of the cards' tables, for a plain <select> wrapped in
+  // <span class="annika-select">: what the irrigation card's "Start" dropdown
+  // is (Home Assistant's select menu) with the same fill, corners, text and
+  // arrow, drawn from the same theme variables. The arrow is on the wrapper
+  // because a <select> cannot hold one that follows the theme. Include it in
+  // the card's <style> block.
+  const SELECT_CSS = `
+    .annika-select {
+      position: relative;
+      display: inline-block;
+      max-width: 100%;
+      vertical-align: middle;
+    }
+    .annika-select select {
+      -webkit-appearance: none;
+      appearance: none;
+      box-sizing: border-box;
+      width: 100%;
+      min-width: 0;
+      margin: 0;
+      height: var(--control-select-menu-height, 42px);
+      padding: 0 36px 0 12px;
+      border: 0;
+      border-radius: var(--control-select-menu-border-radius, 12px);
+      background: color-mix(in srgb, var(--control-select-menu-background-color, var(--disabled-color)) 20%, transparent);
+      color: var(--control-select-menu-text-color, var(--primary-text-color));
+      font: inherit;
+      font-size: 14px;
+      text-overflow: ellipsis;
+      cursor: pointer;
+      color-scheme: dark light;
+    }
+    .annika-select select:focus-visible {
+      outline: 2px solid var(--primary-color);
+      outline-offset: 2px;
+    }
+    .annika-select select:disabled {
+      cursor: default;
+      opacity: 0.4;
+    }
+    .annika-select::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      right: 8px;
+      width: 24px;
+      height: 24px;
+      margin-top: -12px;
+      pointer-events: none;
+      background: var(--secondary-text-color);
+      -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M7,10L12,15L17,10H7Z'/%3E%3C/svg%3E") center / contain no-repeat;
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M7,10L12,15L17,10H7Z'/%3E%3C/svg%3E") center / contain no-repeat;
+    }
+  `
+
   // A history graph draws a switch that is on in amber, whatever the theme:
   // Home Assistant's own colour for an active switch. The alarm card's graph
   // is green (armed), so the graphs of the cards built on switches take the
@@ -631,8 +686,13 @@
 
   // --- texts ---------------------------------------------------------------
   //
-  // A card's own words follow the user's Home Assistant language (their
-  // profile), or `language:` in the card config. Each card keeps a dictionary
+  // A card's own words follow `language:` in the card config; else the
+  // language the person picked in their Home Assistant profile; else the
+  // house's, Home Assistant's own language setting. That last one is the
+  // language the integration already writes the logbook and the events in: an
+  // account nobody changed the profile language of reads English whatever the
+  // house speaks (`hass.language` is the browser's then), and the cards ended
+  // up in English next to a logbook in Spanish. Each card keeps a dictionary
   // per language, English being the one everything falls back to:
   //
   //   const TEXTS = { en: { title: 'Activity' }, es: { title: 'Actividad' } }
@@ -642,7 +702,14 @@
   // a language missing a key falls back to English for that key alone. The
   // card config then overrides single texts on top, as it always could.
   function language(hass, config) {
-    return (config && config.language) || (hass && hass.locale && hass.locale.language) || (hass && hass.language) || 'en'
+    return (
+      (config && config.language) ||
+      (hass && hass.selectedLanguage) ||
+      (hass && hass.config && hass.config.language) ||
+      (hass && hass.locale && hass.locale.language) ||
+      (hass && hass.language) ||
+      'en'
+    )
   }
 
   function textsFor(dictionaries, lang) {
@@ -677,6 +744,7 @@
     displayName,
     HEADING_CSS,
     CHECKBOX_CSS,
+    SELECT_CSS,
     HISTORY_CSS,
     appendHeading,
     entityArea,

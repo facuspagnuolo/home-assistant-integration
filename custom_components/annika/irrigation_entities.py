@@ -18,11 +18,14 @@ from homeassistant.components.select import SelectEntity
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.components.time import TimeEntity
-from homeassistant.const import STATE_ON, UnitOfTime
+from homeassistant.const import STATE_ON, STATE_UNAVAILABLE, UnitOfTime
+from homeassistant.core import Event, callback
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
 from .irrigation import (
+    MAX_MANUAL_MINUTES,
     MAX_RAIN_DELAY_DAYS,
     MAX_SUNRISE_OFFSET_MINUTES,
     MAX_ZONE_MINUTES,
@@ -30,6 +33,7 @@ from .irrigation import (
     STATUS_DISABLED,
     STATUSES,
     UNIQUE_ENABLED,
+    UNIQUE_MANUAL_MINUTES,
     UNIQUE_NEXT_START,
     UNIQUE_RAIN_DELAY_AFTER_RAIN,
     UNIQUE_RUN,
@@ -42,7 +46,9 @@ from .irrigation import (
     AnnikaIrrigation,
     IrrigationGroup,
     IrrigationSeason,
+    IrrigationZone,
     unique_day,
+    unique_manual,
     unique_minutes,
 )
 
@@ -58,6 +64,60 @@ class _IrrigationEntity:
 
 
 # --- switches ---------------------------------------------------------------
+
+
+class IrrigationManualSwitch(_IrrigationEntity, SwitchEntity):
+    """A zone watered by hand: on until switched off, or until the manual limit.
+
+    It is the zone itself, seen through Annika: on while the zone is on, from
+    wherever it was switched on. Switching it on starts the zone and keeps it
+    going past the controller's own cap of one start (see irrigation.py).
+    """
+
+    _attr_icon = "mdi:sprinkler"
+
+    def __init__(self, irrigation: AnnikaIrrigation, zone: IrrigationZone) -> None:
+        super().__init__(irrigation)
+        self._zone = zone
+        label = zone.name or zone.entity_id.split(".", 1)[1].replace("_", " ").title()
+        self._attr_name = f"Irrigation Manual {label}"
+        self._attr_unique_id = unique_manual(zone)
+
+    @property
+    def available(self) -> bool:
+        state = self.hass.states.get(self._zone.entity_id)
+        return state is not None and state.state != STATE_UNAVAILABLE
+
+    @property
+    def is_on(self) -> bool:
+        state = self.hass.states.get(self._zone.entity_id)
+        return state is not None and state.state == STATE_ON
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        deadline = self._irrigation.manual_deadline(self._zone.entity_id)
+        return {"zone": self._zone.entity_id, "manual_until": deadline.isoformat() if deadline else None}
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self._irrigation.async_manual_on(self._zone)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self._irrigation.async_manual_off(self._zone)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        await self._listen()
+        self.async_on_remove(
+            async_track_state_change_event(
+                self.hass, [self._zone.entity_id], self._zone_changed
+            )
+        )
+        # The status sensor may have written its map before this switch existed.
+        self._irrigation.notify()
+
+    @callback
+    def _zone_changed(self, _event: Event) -> None:
+        self.async_write_ha_state()
 
 
 class IrrigationEnabledSwitch(_IrrigationEntity, SwitchEntity, RestoreEntity):
@@ -224,6 +284,31 @@ class IrrigationRainDelayAfterRainNumber(_IrrigationNumber):
         return self._irrigation.default_rain_delay_after_rain()
 
 
+class IrrigationManualMinutesNumber(_IrrigationNumber):
+    """Safeguard for watering by hand: a zone switched on by hand closes after this.
+
+    The schedule does not use it: each group has its own minutes per season.
+    It can be edited while a zone is on: the zone's end moves with it.
+    """
+
+    _attr_name = "Irrigation Manual Limit"
+    _attr_unique_id = UNIQUE_MANUAL_MINUTES
+    _attr_icon = "mdi:timer-alert-outline"
+    _attr_native_min_value = 1
+    _attr_native_max_value = MAX_MANUAL_MINUTES
+    _attr_native_step = 5
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+
+    def _read(self) -> float | None:
+        return self._irrigation.settings.manual_minutes
+
+    def _write(self, value: float) -> None:
+        self._irrigation.settings.manual_minutes = value
+
+    def _default(self) -> float:
+        return self._irrigation.default_manual_minutes()
+
+
 # --- start ------------------------------------------------------------------
 
 
@@ -332,8 +417,17 @@ class IrrigationStatusSensor(_IrrigationEntity, SensorEntity):
         entity = irrigation.entity_id
         today = dt_util.now().date()
         season = irrigation.season_for(today)
+        next_season = (
+            irrigation.season_for(dt_util.as_local(irrigation.next_run).date())
+            if irrigation.next_run else None
+        )
+        next_program = irrigation.program(next_season) if next_season else []
         return {
             "next_run": irrigation.next_run.isoformat() if irrigation.next_run else None,
+            "next_run_duration_seconds": (
+                sum(minutes * 60 for _, minutes in next_program)
+                + max(0, len(next_program) - 1) * irrigation.pause_seconds
+            ) if irrigation.next_run else None,
             "last_run": irrigation.last_run.isoformat() if irrigation.last_run else None,
             "last_result": irrigation.last_result,
             "current_season": season.key if season else None,
@@ -364,7 +458,13 @@ class IrrigationStatusSensor(_IrrigationEntity, SensorEntity):
                 for item in irrigation.seasons
             ],
             "zones": [
-                {"entity": zone.entity_id, "group": zone.group, "name": zone.name}
+                {
+                    "entity": zone.entity_id,
+                    "group": zone.group,
+                    "name": zone.name,
+                    # What the card's tile presses: the zone's manual switch, when it has one.
+                    "manual": entity("switch", unique_manual(zone)),
+                }
                 for zone in irrigation.zones
             ],
             "entities": {
@@ -373,6 +473,7 @@ class IrrigationStatusSensor(_IrrigationEntity, SensorEntity):
                 "sunrise_offset": entity("number", UNIQUE_SUNRISE_OFFSET),
                 "start_time": entity("time", UNIQUE_START_TIME),
                 "rain_delay_after_rain": entity("number", UNIQUE_RAIN_DELAY_AFTER_RAIN),
+                "manual_minutes": entity("number", UNIQUE_MANUAL_MINUTES),
                 "run": entity("button", UNIQUE_RUN),
                 "stop": entity("button", UNIQUE_STOP),
                 "rain_sensor": irrigation.rain_sensor,
@@ -415,11 +516,15 @@ def sensors(irrigation: AnnikaIrrigation) -> list[SensorEntity]:
     return [IrrigationStatusSensor(irrigation), IrrigationNextStartSensor(irrigation)]
 
 def switches(irrigation: AnnikaIrrigation) -> list[SwitchEntity]:
-    return [IrrigationEnabledSwitch(irrigation)] + [
-        IrrigationDaySwitch(irrigation, season, weekday)
-        for season in irrigation.seasons
-        for weekday in WEEKDAYS
-    ]
+    return (
+        [IrrigationEnabledSwitch(irrigation)]
+        + [
+            IrrigationDaySwitch(irrigation, season, weekday)
+            for season in irrigation.seasons
+            for weekday in WEEKDAYS
+        ]
+        + [IrrigationManualSwitch(irrigation, zone) for zone in irrigation.manual_zones()]
+    )
 
 
 def numbers(irrigation: AnnikaIrrigation) -> list[NumberEntity]:
@@ -431,4 +536,7 @@ def numbers(irrigation: AnnikaIrrigation) -> list[NumberEntity]:
     entities.append(IrrigationSunriseOffsetNumber(irrigation))
     if irrigation.rain_sensor and irrigation.rain_delay:
         entities.append(IrrigationRainDelayAfterRainNumber(irrigation))
+    # Only Rain Bird zones can be given a time limit when switched on by hand.
+    if irrigation.rainbird_entries():
+        entities.append(IrrigationManualMinutesNumber(irrigation))
     return entities

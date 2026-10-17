@@ -118,7 +118,7 @@ async def test_a_warning_switches_the_outputs_on_for_their_time_and_logs_it(hass
     await hass.async_block_till_done()
     assert sorted(entities(on)) == ["light.flood_1", "switch.reflectores", "switch.sirenas"]
     assert state(hass) == "armed_away"
-    assert decisions(hass)[0] == "Camera 1 · away · warning 1 of 3 · Sirens, Floodlights on"
+    assert decisions(hass)[0] == "Camera 1 · away · warning 1 of 3"
     assert panel.rules.count == 1
     await advance(hass, freezer, 4)
     assert entities(off) == ["switch.sirenas"]
@@ -449,7 +449,7 @@ async def test_decisions_and_the_logbook_speak_the_house_language(hass):
     await armed(hass, "away")
     detect(hass, CAM1)
     await hass.async_block_till_done()
-    assert decisions(hass)[0] == "Camera 1 · afuera · aviso 1 de 3 · Sirens, Floodlights encendido"
+    assert decisions(hass)[0] == "Camera 1 · salida · aviso 1 de 3"
     assert lines[-1].data["name"] == "Alarma" and lines[-1].data["entity_id"] == ENTITY
 
 

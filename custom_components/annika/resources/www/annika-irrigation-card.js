@@ -9,14 +9,18 @@
 //
 //   Top row, three columns:
 //     1. Schedule: on/off, run now, stop, and what comes next
-//     2. Start: at sunrise (with an offset) or at a fixed time
+//     2. Start: at sunrise (with an offset) or at a fixed time; half-width
+//        tiles, two to a line
 //     3. Rain: the rain sensor, the controller's rain delay, and how many
 //        days of delay the integration sets when it rains (only when the
-//        integration was given both a rain sensor and a rain delay)
+//        integration was given both a rain sensor and a rain delay); also
+//        half-width tiles, two to a line
 //   Then, full width:
 //     Days and minutes: one row per season, a checkbox per weekday and the
 //       minutes each group of zones runs. Today's season is marked.
-//     Zones: a tile each.
+//     Zones: a tile each, under the limit for watering by hand (only when
+//       the zones are Rain Bird's): how long a zone switched on by hand runs
+//       before it closes on its own, so it is never left open by mistake.
 //     History: the zones over the last hours.
 //
 // Usage in a dashboard view:
@@ -75,12 +79,27 @@
       },
       labels: {
         next: 'Next run',
+        duration_minute: 'minute',
+        duration_minutes: 'minutes',
         none: 'Nothing scheduled',
         disabled: 'Schedule off',
         running: 'Watering',
         season: 'Season',
         now: 'today',
         minutes: 'min',
+        tile_schedule: 'Schedule',
+        tile_run: 'Run now',
+        tile_stop: 'Stop',
+        tile_start_mode: 'Start mode',
+        start_sunrise: 'At sunrise',
+        start_time: 'At a fixed time',
+        tile_sunrise_offset: 'Sunrise offset',
+        tile_start_time: 'Start time',
+        tile_rain_sensor: 'Rain sensor',
+        tile_rain_delay: 'Rain delay',
+        tile_rain_delay_after_rain: 'Delay after rain',
+        manual: 'Manual watering limit',
+        manual_hint: 'A zone you switch on by hand stays on until you switch it off or this time runs out (up to 24 h), so it is never left open by mistake.',
         automation: 'Run by',
         on: 'on',
         off: 'off',
@@ -98,12 +117,27 @@
       },
       labels: {
         next: 'Próximo riego',
+        duration_minute: 'minuto',
+        duration_minutes: 'minutos',
         none: 'Sin riegos programados',
         disabled: 'Programa apagado',
         running: 'Regando',
         season: 'Temporada',
         now: 'hoy',
         minutes: 'min',
+        tile_schedule: 'Programa',
+        tile_run: 'Regar ahora',
+        tile_stop: 'Detener',
+        tile_start_mode: 'Inicio',
+        start_sunrise: 'Al amanecer',
+        start_time: 'A hora fija',
+        tile_sunrise_offset: 'Desfase del amanecer',
+        tile_start_time: 'Hora de inicio',
+        tile_rain_sensor: 'Sensor de lluvia',
+        tile_rain_delay: 'Retraso por lluvia',
+        tile_rain_delay_after_rain: 'Retraso tras lluvia',
+        manual: 'Límite de riego manual',
+        manual_hint: 'Una zona que encendés a mano queda prendida hasta que la apagues o se cumpla este tiempo (hasta 24 h), para que no quede abierta por olvido.',
         automation: 'Lo maneja',
         on: 'prendida',
         off: 'apagada',
@@ -233,22 +267,23 @@
     }
 
     async _build(attributes) {
-      const { tileConfig, headingConfig, gridConfig, HEADING_CSS, CHECKBOX_CSS, HISTORY_CSS } = annika()
+      const { tileConfig, headingConfig, gridConfig, HEADING_CSS, CHECKBOX_CSS, SELECT_CSS, HISTORY_CSS } = annika()
       const helpers = await window.loadCardHelpers()
       const entities = attributes.entities || {}
       const color = this._config.color === undefined ? DEFAULT_COLOR : this._config.color
       const headings = this._headings
-      const tile = (entity, options = {}) => tileConfig({ entity, color }, options)
+      const tile = (entity, options = {}, name) => tileConfig({ entity, name, color }, options)
+      const labels = this._labels
 
       const scheduleCards = [
         headingConfig(headings.schedule),
         // With an automation of the house's own, the toggle is that automation.
-        tile(entities.automation || entities.enabled, { features: [{ type: 'toggle' }] }),
+        tile(entities.automation || entities.enabled, { features: [{ type: 'toggle' }] }, entities.automation ? undefined : labels.tile_schedule),
         gridConfig(
           [
             // A button's state is when it was last pressed: nothing worth a line.
-            tile(entities.run, { hide_state: true, tap_action: pressAction(entities.run), icon_tap_action: pressAction(entities.run) }),
-            tile(entities.stop, { hide_state: true, tap_action: pressAction(entities.stop), icon_tap_action: pressAction(entities.stop) }),
+            tile(entities.run, { hide_state: true, tap_action: pressAction(entities.run), icon_tap_action: pressAction(entities.run) }, labels.tile_run),
+            tile(entities.stop, { hide_state: true, tap_action: pressAction(entities.stop), icon_tap_action: pressAction(entities.stop) }, labels.tile_stop),
           ],
           2,
         ),
@@ -256,35 +291,39 @@
 
       // Only the control for the chosen mode shows; _update() swaps them. Not
       // a `conditional` card: built outside a view it never re-checks.
-      const startCards = [
-        headingConfig(headings.start),
-        tile(entities.start_mode, { features: [{ type: 'select-options' }] }),
-      ]
-      const offsetConfig = tile(entities.sunrise_offset, { features: [{ type: 'numeric-input', style: 'buttons' }] })
-      const timeConfig = tile(entities.start_time)
+      const startCards = [headingConfig(headings.start)]
+      const offsetConfig = tile(entities.sunrise_offset, { features: [{ type: 'numeric-input', style: 'buttons' }] }, labels.tile_sunrise_offset)
+      const timeConfig = tile(entities.start_time, {}, labels.tile_start_time)
 
-      const rainCards = [headingConfig(headings.rain)]
-      if (entities.rain_sensor) rainCards.push(tile(entities.rain_sensor))
+      // The rain tiles are named by what they are: the controller's own names
+      // ("Rain Bird Controller Rain delay") were longer than the tile.
+      // The sensor takes a line to itself (twice a delay's width); the two
+      // delays share the next one.
+      const rainSensorConfig = entities.rain_sensor ? tile(entities.rain_sensor, {}, labels.tile_rain_sensor) : null
+      const rainDelayConfigs = []
       if (entities.rain_delay) {
-        rainCards.push(tile(entities.rain_delay, { features: [{ type: 'numeric-input', style: 'buttons' }] }))
+        rainDelayConfigs.push(tile(entities.rain_delay, { features: [{ type: 'numeric-input', style: 'buttons' }] }, labels.tile_rain_delay))
       }
       if (entities.rain_delay_after_rain) {
-        rainCards.push(tile(entities.rain_delay_after_rain, { features: [{ type: 'numeric-input', style: 'buttons' }] }))
+        rainDelayConfigs.push(tile(entities.rain_delay_after_rain, { features: [{ type: 'numeric-input', style: 'buttons' }] }, labels.tile_rain_delay_after_rain))
       }
 
       const zones = attributes.zones || []
       const zoneNames = new Map(zones.map((zone) => [zone.entity, zone.name]))
+      const zonesGrid = gridConfig(
+        zones.map((zone) =>
+          tileConfig({ entity: zone.manual || zone.entity, name: zone.name || this._friendlyName(zone.entity), icon: this._config.zone_icon || DEFAULT_ZONE_ICON, color }),
+        ),
+        this._narrow ? Math.min(NARROW_ZONE_COLUMNS, Number(this._config.zone_columns) || DEFAULT_ZONE_COLUMNS) : Number(this._config.zone_columns) || DEFAULT_ZONE_COLUMNS,
+      )
+      // The safeguard for watering by hand: it exists when the zones are Rain Bird's.
+      const manualConfig = entities.manual_minutes
+        ? tileConfig({ entity: entities.manual_minutes, name: this._labels.manual, color }, { features: [{ type: 'numeric-input', style: 'buttons' }] })
+        : null
+      const zoneColumns = Number(this._config.zone_columns) || DEFAULT_ZONE_COLUMNS
       const zonesConfig = {
         type: 'vertical-stack',
-        cards: [
-          headingConfig(headings.zones),
-          gridConfig(
-            zones.map((zone) =>
-              tileConfig({ entity: zone.entity, name: zone.name || undefined, icon: this._config.zone_icon || DEFAULT_ZONE_ICON, color }),
-            ),
-            this._narrow ? Math.min(NARROW_ZONE_COLUMNS, Number(this._config.zone_columns) || DEFAULT_ZONE_COLUMNS) : Number(this._config.zone_columns) || DEFAULT_ZONE_COLUMNS,
-          ),
-        ],
+        cards: [headingConfig(headings.zones), zonesGrid],
       }
       const historyConfig = {
         type: 'vertical-stack',
@@ -322,12 +361,27 @@
         <style>
           ${HEADING_CSS}
           ${CHECKBOX_CSS}
+          ${SELECT_CSS}
           ${HISTORY_CSS}
           .annika-irr-top { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; align-items: start; }
           .annika-irr-top > * { min-width: 0; }
           .annika-irr-column { display: flex; flex-direction: column; gap: var(--ha-section-row-gap, 8px); }
+          .annika-irr-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ha-section-row-gap, 8px); }
+          .annika-irr-tiles > * { min-width: 0; }
+          .annika-irr-mode { padding: 12px; }
+          .annika-irr-mode label { display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
+          .annika-irr-mode-title { display: flex; align-items: center; gap: 12px; }
+          .annika-irr-mode-title ha-icon { flex: none; color: var(--state-icon-color); }
+          .annika-irr-mode .annika-select { display: block; }
           .annika-irr-block { margin-top: 16px; display: block; height: auto; }
           .annika-irr-status { color: var(--secondary-text-color); font-size: 14px; line-height: 1.4; padding: 4px 4px 0; }
+          .annika-irr-tiles > .wide { grid-column: 1 / -1; }
+          /* The limit is two zone tiles wide, its explanation beside it. */
+          .annika-irr-manual { display: grid; grid-template-columns: repeat(var(--annika-zone-columns, 4), minmax(0, 1fr)); gap: var(--ha-section-row-gap, 8px); align-items: center; }
+          .annika-irr-manual > * { min-width: 0; }
+          .annika-irr-manual > .tile { grid-column: span 2; }
+          .annika-irr-manual > .annika-irr-hint { grid-column: span var(--annika-hint-columns, 2); }
+          .annika-irr-hint { color: var(--secondary-text-color); font-size: 13px; line-height: 1.4; padding: 2px 4px; }
           .annika-irr-status strong { color: var(--primary-text-color); font-weight: 500; }
           .annika-irr-table-card { padding: 8px 0; }
           .annika-irr-scroll { overflow-x: auto; }
@@ -351,7 +405,11 @@
           @media (max-width: 800px) { .annika-irr-top { grid-template-columns: 1fr; } }
           /* A narrow card (a phone): zones two by two, and each season is a
              block: name, then the days, then the minutes of each group. */
+          .annika-irr-manual.stacked { grid-template-columns: minmax(0, 1fr); }
+          .annika-irr-manual.stacked > * { grid-column: 1; }
           @container (max-width: 640px) /* NARROW_WIDTH */ {
+            .annika-irr-manual { grid-template-columns: minmax(0, 1fr); }
+            .annika-irr-manual > .tile, .annika-irr-manual > .annika-irr-hint { grid-column: 1; }
             .annika-irr-scroll { overflow-x: visible; }
             .annika-irr-table, .annika-irr-table tbody { display: block; width: 100%; }
             .annika-irr-table thead { display: none; }
@@ -367,15 +425,47 @@
       `
       const top = document.createElement('div')
       top.className = 'annika-irr-top'
-      top.appendChild(column(scheduleCards, this._status))
-      const startColumn = column(startCards)
+      top.appendChild(column(scheduleCards))
+      // When it runs next belongs with when it starts.
+      const startColumn = column(startCards, this._status)
+      // Two to a line: the mode, and the offset or the time, whichever the mode uses.
+      const startTiles = document.createElement('div')
+      startTiles.className = 'annika-irr-tiles'
       this._offsetElement = build(offsetConfig)
       this._timeElement = build(timeConfig)
-      startColumn.appendChild(this._offsetElement)
-      startColumn.appendChild(this._timeElement)
+      // Own the option labels so they follow the card language even when
+      // Home Assistant's built-in selector uses a different profile language.
+      const modeCard = document.createElement('ha-card')
+      modeCard.className = 'annika-irr-mode'
+      modeCard.innerHTML = `<label><span class="annika-irr-mode-title"><ha-icon icon="mdi:clock-start" aria-hidden="true"></ha-icon>${escapeHtml(labels.tile_start_mode)}</span><span class="annika-select"><select><option value="sunrise">${escapeHtml(labels.start_sunrise)}</option><option value="time">${escapeHtml(labels.start_time)}</option></select></span></label>`
+      this._modeSelect = modeCard.querySelector('select')
+      this._modeSelect.addEventListener('change', async () => {
+        this._modeSelect.disabled = true
+        try {
+          await this._hass.callService('select', 'select_option', { entity_id: entities.start_mode, option: this._modeSelect.value })
+        } finally {
+          this._update()
+        }
+      })
+      startTiles.appendChild(modeCard)
+      startTiles.appendChild(this._offsetElement)
+      startTiles.appendChild(this._timeElement)
+      startColumn.insertBefore(startTiles, this._status)
       this._startModeEntity = entities.start_mode
       top.appendChild(startColumn)
-      top.appendChild(column(rainCards))
+      const rainColumn = column([headingConfig(headings.rain)])
+      if (rainSensorConfig || rainDelayConfigs.length > 0) {
+        const rainGrid = document.createElement('div')
+        rainGrid.className = 'annika-irr-tiles'
+        if (rainSensorConfig) {
+          const sensor = build(rainSensorConfig)
+          sensor.classList.add('wide')
+          rainGrid.appendChild(sensor)
+        }
+        for (const config of rainDelayConfigs) rainGrid.appendChild(build(config))
+        rainColumn.appendChild(rainGrid)
+      }
+      top.appendChild(rainColumn)
       this.appendChild(top)
 
       const days = document.createElement('div')
@@ -384,7 +474,34 @@
       days.appendChild(this._table(attributes))
       this.appendChild(days)
 
-      const zonesElement = build(zonesConfig)
+      let zonesElement
+      if (manualConfig) {
+        // The limit and what it means, then the zones it applies to.
+        zonesElement = document.createElement('div')
+        zonesElement.className = 'annika-irr-column'
+        zonesElement.appendChild(build(headingConfig(headings.zones)))
+        const manual = document.createElement('div')
+        manual.className = 'annika-irr-manual'
+        // Beside it only when the zones are in three or more columns; two
+        // columns leave no room, so the explanation goes below.
+        if (zoneColumns >= 3) {
+          manual.style.setProperty('--annika-zone-columns', String(zoneColumns))
+          manual.style.setProperty('--annika-hint-columns', String(zoneColumns - 2))
+        } else {
+          manual.classList.add('stacked')
+        }
+        const manualTile = build(manualConfig)
+        manualTile.classList.add('tile')
+        manual.appendChild(manualTile)
+        const hint = document.createElement('div')
+        hint.className = 'annika-irr-hint'
+        hint.textContent = this._labels.manual_hint
+        manual.appendChild(hint)
+        zonesElement.appendChild(manual)
+        zonesElement.appendChild(build(zonesGrid))
+      } else {
+        zonesElement = build(zonesConfig)
+      }
       zonesElement.classList.add('annika-irr-block')
       this.appendChild(zonesElement)
       if (zones.length > 0) {
@@ -497,6 +614,10 @@
       if (this._status) this._status.innerHTML = this._statusLine(state)
 
       const mode = this._hass.states[this._startModeEntity]
+      if (this._modeSelect) {
+        this._modeSelect.value = mode ? mode.state : ''
+        this._modeSelect.disabled = !mode || !['sunrise', 'time'].includes(mode.state)
+      }
       const fixedTime = !!mode && mode.state === 'time'
       if (this._offsetElement) this._offsetElement.style.display = fixedTime ? 'none' : ''
       if (this._timeElement) this._timeElement.style.display = fixedTime ? '' : 'none'
@@ -518,7 +639,12 @@
         return `${escapeHtml(labels.automation)}: <strong>${escapeHtml(name)}</strong> · ${escapeHtml(on ? labels.on : labels.off)}`
       }
       if (!attributes.next_run) return escapeHtml(labels.none)
-      return `${escapeHtml(labels.next)}: <strong>${escapeHtml(this._when(attributes.next_run))}</strong>`
+      const seconds = attributes.next_run_duration_seconds
+      const minutes = Math.ceil(seconds / 60)
+      const duration = typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0
+        ? ` (${minutes} ${escapeHtml(minutes === 1 ? labels.duration_minute : labels.duration_minutes)})`
+        : ''
+      return `${escapeHtml(labels.next)}: <strong>${escapeHtml(this._when(attributes.next_run))}</strong>${duration}`
     }
 
     _friendlyName(entity) {

@@ -106,13 +106,13 @@
     es: {
       disarmed: 'Desarmada',
       arming: 'Armando',
-      armed_away: 'Armada afuera',
+      armed_away: 'Armada en modo salida',
       armed_night: 'Armada noche',
       armed_vacation: 'Armada vacaciones',
       pending: '¿Intruso? Desarmá ahora',
       triggered: 'Disparada',
       disarm: 'Desarmar',
-      arm_away: 'Armar afuera',
+      arm_away: 'Armar en modo salida',
       arm_night: 'Armar noche',
       arm_vacation: 'Armar vacaciones',
       enter_arm: 'Ingresá el código para armar',
@@ -157,7 +157,7 @@
       entities_sub: '{n} entidades',
       zones: 'Zonas y sensores',
       zone_sensor: 'Zona / sensor',
-      mode_away: 'Afuera',
+      mode_away: 'Salida',
       mode_night: 'Noche',
       mode_vacation: 'Vacaciones',
       rule_off: 'Apagado',
@@ -191,6 +191,9 @@
     String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
 
   const fill = (text, values) => text.replace(/\{(\w+)\}/g, (_, key) => values[key] ?? '')
+
+  // A dropdown, drawn like the irrigation card's (see SELECT_CSS in annika-common.js).
+  const selectBox = (select) => `<span class="annika-select">${select}</span>`
 
   const STOP = '<svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>'
   const PLAY = '<svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>'
@@ -457,7 +460,7 @@
       return `
         <div class="sec" data-heading="${escapeHtml(t.warning)}">${escapeHtml(t.warning)}</div>
         <div class="panel">
-        <div class="warning">
+        <div class="limits">
           <label class="field"><span>${escapeHtml(t.warnings_before)}</span>
             <input type="number" min="1" max="20" data-warning="limit" value="${w.limit}"></label>
           <label class="field"><span>${escapeHtml(t.counter_resets)}</span>
@@ -476,7 +479,7 @@
         const sub = o.entities.length === 1 ? o.entities[0] : fill(t.entities_sub, { n: o.entities.length })
         const duration = o.warning_enabled
           ? `<input type="number" min="1" data-duration="${escapeHtml(o.id)}" value="${value}">
-             <select data-unit="${escapeHtml(o.id)}"><option value="1"${minutes ? '' : ' selected'}>${escapeHtml(t.sec)}</option><option value="60"${minutes ? ' selected' : ''}>${escapeHtml(t.min)}</option></select>`
+             ${selectBox(`<select data-unit="${escapeHtml(o.id)}"><option value="1"${minutes ? '' : ' selected'}>${escapeHtml(t.sec)}</option><option value="60"${minutes ? ' selected' : ''}>${escapeHtml(t.min)}</option></select>`)}`
           : ''
         return `<tr>
           <td class="device"><div>${escapeHtml(o.name)}</div><div class="sub">${escapeHtml(sub)}</div></td>
@@ -528,7 +531,7 @@
         const summary = zone.sensors.length === 1 ? t.sensors_1 : fill(t.sensors_n, { n: zone.sensors.length })
         rows.push(`<tr class="zone"><td class="name"><b>${escapeHtml(zone.name)}</b> <span class="sub">${escapeHtml(summary)}</span></td>
           ${this._existing.map((mode) => this._modes.includes(mode)
-            ? `<td><select class="rule ${zone.rules[mode]}" data-zone="${escapeHtml(zone.id)}" data-mode="${mode}">${optionList(zone.rules[mode])}</select></td>`
+            ? `<td>${selectBox(`<select class="rule${zone.rules[mode] === 'off' ? ' off' : ''}" data-zone="${escapeHtml(zone.id)}" data-mode="${mode}">${optionList(zone.rules[mode])}</select>`)}</td>`
             : '<td class="none">–</td>').join('')}</tr>`)
         for (const sensor of zone.sensors) {
           const own = this._modes.some((mode) => sensor.rules[mode] !== null)
@@ -539,7 +542,7 @@
               if (!this._modes.includes(mode)) return '<td class="none">–</td>'
               const selected = sensor.rules[mode]
               const effective = selected || zone.rules[mode]
-              return `<td><select class="rule ${effective}${selected === null ? ' inherit' : ''}" data-sensor="${escapeHtml(sensor.id)}" data-mode="${mode}">${optionList(selected, zone.rules[mode])}</select></td>`
+              return `<td>${selectBox(`<select class="rule${effective === 'off' ? ' off' : ''}${selected === null ? ' inherit' : ''}" data-sensor="${escapeHtml(sensor.id)}" data-mode="${mode}">${optionList(selected, zone.rules[mode])}</select>`)}</td>`
             }).join('')}</tr>`)
         }
       }
@@ -597,7 +600,7 @@
         const minutes = this._entityState(a.quiet_minutes) ?? ''
         const mode = this._entityState(a.mode_entity) || a.mode
         const modeControl = a.mode_entity
-          ? `<select data-select="${escapeHtml(a.mode_entity)}">${this._modes.map((m) => `<option value="${m}"${m === mode ? ' selected' : ''}>${escapeHtml(t['mode_' + m])}</option>`).join('')}</select>`
+          ? selectBox(`<select data-select="${escapeHtml(a.mode_entity)}">${this._modes.map((m) => `<option value="${m}"${m === mode ? ' selected' : ''}>${escapeHtml(t['mode_' + m])}</option>`).join('')}</select>`)
           : `<b>${escapeHtml(t['mode_' + mode] || mode)}</b>`
         const quiet = a.has_sensors
           ? `<span class="quiet">${escapeHtml(t.quiet)}</span>
@@ -612,7 +615,7 @@
         const d = auto.disarm
         const dMode = this._entityState(d.mode_entity) || d.mode
         const dModeControl = d.mode_entity
-          ? `<select data-select="${escapeHtml(d.mode_entity)}">${this._modes.map((m) => `<option value="${m}"${m === dMode ? ' selected' : ''}>${escapeHtml(t['mode_' + m])}</option>`).join('')}</select>`
+          ? selectBox(`<select data-select="${escapeHtml(d.mode_entity)}">${this._modes.map((m) => `<option value="${m}"${m === dMode ? ' selected' : ''}>${escapeHtml(t['mode_' + m])}</option>`).join('')}</select>`)
           : `<b>${escapeHtml(t['mode_' + dMode] || dMode)}</b>`
         html += `<div class="auto-row">${check(d.enabled)}<span>${escapeHtml(t.auto_disarm)} ${escapeHtml(t.at)}</span>
           <input type="time" data-time="${escapeHtml(d.time || '')}" value="${clock(d.time)}">
@@ -675,7 +678,7 @@
             padding: 12px 16px; box-sizing: border-box; }
           .annika-alarm .panel.table { padding: 4px 8px; overflow-x: auto; }
           .annika-alarm .muted, .annika-alarm .sub { color: var(--secondary-text-color); font-size: 13px; }
-          .annika-alarm input[type=number], .annika-alarm input[type=time], .annika-alarm select {
+          .annika-alarm input[type=number], .annika-alarm input[type=time] {
             background: var(--secondary-background-color, transparent); color: var(--primary-text-color);
             border: 1px solid var(--divider-color); border-radius: 6px; padding: 4px 6px; font: inherit; font-size: 14px; color-scheme: dark light; }
           .annika-alarm input[type=number] { width: 64px; }
@@ -708,7 +711,8 @@
           .annika-ak .msg.ok { color: var(--primary-color); }
           .annika-ak .link { background: none; border: 0; color: var(--primary-color); font: inherit; font-size: 14px; cursor: pointer; padding: 4px 8px; }
 
-          .annika-alarm .warning { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; margin-bottom: 0; }
+          /* Plain text: this block was in the warning colour. */
+          .annika-alarm .limits { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; margin-bottom: 0; color: var(--primary-text-color); }
           .annika-alarm .field { display: inline-flex; align-items: center; gap: 8px; }
           .annika-alarm .now { color: var(--primary-color); font-size: 13px; font-style: italic; margin: 10px 0 2px; }
           .annika-alarm table { width: 100%; border-collapse: collapse; }
@@ -721,6 +725,9 @@
           .annika-alarm .play:active { filter: brightness(.8); }
           .annika-alarm .play.running { background: color-mix(in srgb, var(--warning-color, #f5b335) 25%, transparent); color: var(--warning-color, #f5b335); }
           ${(window.Annika && window.Annika.CHECKBOX_CSS) || ''}
+          ${(window.Annika && window.Annika.SELECT_CSS) || ''}
+          /* Next to a number or a time the dropdown is as tall as they are. */
+          .annika-alarm .cell .annika-select select, .annika-alarm .auto-row .annika-select select { height: 34px; }
 
           .annika-alarm .zones tr.zone td { border-top: 1px solid var(--divider-color); padding-top: 12px; }
           .annika-alarm .zones tr.sensor td { border-top: 1px solid color-mix(in srgb, var(--divider-color) 50%, transparent); }
@@ -731,13 +738,9 @@
           .annika-alarm .zones td.name .sub { margin-left: 6px; }
           .annika-alarm .zones tr.sensor td.name .sub { margin-left: 0; }
           .annika-alarm .own { color: var(--primary-color); font-style: italic; margin-left: 8px; }
-          .annika-alarm select.rule { min-width: 112px; }
+          .annika-alarm .annika-select select.rule { min-width: 112px; }
           .annika-alarm select.rule.off { color: var(--secondary-text-color); }
-          .annika-alarm select.rule.warning { color: var(--warning-color, #f5b335); border-color: color-mix(in srgb, var(--warning-color, #f5b335) 45%, transparent);
-            background: color-mix(in srgb, var(--warning-color, #f5b335) 12%, transparent); }
-          .annika-alarm select.rule.trigger { color: var(--error-color, #ff6b6b); border-color: color-mix(in srgb, var(--error-color, #ff6b6b) 45%, transparent);
-            background: color-mix(in srgb, var(--error-color, #ff6b6b) 12%, transparent); }
-          .annika-alarm select.rule.inherit { opacity: .5; border-style: dashed; }
+          .annika-alarm select.rule.inherit { opacity: .55; }
 
           .annika-alarm .decisions { max-height: 340px; overflow-y: auto; }
           .annika-alarm .decision { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--divider-color); }
@@ -761,7 +764,9 @@
             .annika-alarm .panel.table { padding: 4px 4px; }
             .annika-alarm table { table-layout: fixed; }
             .annika-alarm td, .annika-alarm th { padding: 8px 3px; }
-            .annika-alarm select.rule { min-width: 0; width: 100%; padding: 6px 2px; font-size: 12px; }
+            .annika-alarm td > .annika-select { display: block; }
+            .annika-alarm .annika-select select.rule { min-width: 0; height: 36px; padding: 0 20px 0 8px; font-size: 12px; }
+            .annika-alarm .annika-select::after { right: 2px; width: 20px; height: 20px; margin-top: -10px; }
             .annika-alarm .zones th:first-child, .annika-alarm .zones td.name { width: 31%; }
             .annika-alarm .zones tr.sensor td.name { padding-left: 8px; }
             .annika-alarm .sname { gap: 6px; }
@@ -771,9 +776,9 @@
             .annika-alarm .fires th.test, .annika-alarm .fires td.test { width: 44px; }
             .annika-alarm .fires td.device .sub { display: none; }
             .annika-alarm .fires .cell { gap: 4px; flex-wrap: wrap; white-space: normal; }
-            .annika-alarm .fires .cell .muted { display: none; }
+            .annika-alarm .fires .cell .muted { font-size: 12px; }
             .annika-alarm .fires input[type=number] { width: 44px; padding: 6px 4px; }
-            .annika-alarm .fires select { padding: 6px 2px; font-size: 12px; }
+            .annika-alarm .fires .annika-select select { padding: 0 20px 0 8px; font-size: 12px; }
             .annika-alarm .play { width: 32px; height: 32px; }
           }
         </style>
