@@ -61,6 +61,11 @@
       just_now: 'just now',
       hd: 'HD',
       hd_hint: 'Watch this camera in high definition (uses more of the system)',
+      settings: 'Settings',
+      back: 'Back',
+      no_settings: 'This camera has no settings to show',
+      confirm_restart: 'Restart this device?',
+      confirm_siren: 'Turn the siren on?',
     },
     es: {
       missing: 'No se encontró la entidad: {entity}',
@@ -100,12 +105,23 @@
       just_now: 'recién',
       hd: 'HD',
       hd_hint: 'Ver esta cámara en alta definición (usa más recursos)',
+      settings: 'Ajustes',
+      back: 'Volver',
+      no_settings: 'Esta cámara no tiene ajustes para mostrar',
+      confirm_restart: '¿Reiniciar este dispositivo?',
+      confirm_siren: '¿Encender la sirena?',
     },
   }
 
   const KINDS = ['person', 'vehicle', 'animal', 'motion']
   const ACTIONS = ['off', 'record', 'record_notify']
   const MODES = ['away', 'night', 'vacation']
+  // What the settings of a camera show, in this order; the rest follows.
+  const SETTING_DOMAINS = ['switch', 'light', 'siren', 'select', 'number', 'button', 'update', 'binary_sensor', 'sensor']
+  // Entities of the device that are not settings (the streams are the tile).
+  const HIDDEN_DOMAINS = ['camera', 'image']
+  // The tiles' colour, the one the lights and covers cards use for theirs.
+  const SETTINGS_COLOR = 'primary'
   const ICONS = { person: 'mdi:account', vehicle: 'mdi:car', animal: 'mdi:paw', motion: 'mdi:motion-sensor' }
 
   const escapeHtml = (value) =>
@@ -126,6 +142,9 @@
       // The cameras the person asked to see in HD: none until they ask.
       this._hd = new Set()
       this._playing = null
+      // The camera whose settings are open (replaces the card's content), or null.
+      this._settings = null
+      this._tiles = {}
       this._render()
     }
 
@@ -133,6 +152,7 @@
       this._hass = hass
       this._render()
       this._updateSensors()
+      if (this._settings) Object.values(this._tiles).forEach((el) => (el.hass = hass))
       Object.values(this._live).forEach((el) => (el.hass = hass))
     }
 
@@ -220,12 +240,13 @@
         const hd = this._streams(camera).clear
           ? `<button class="hd${this._hd.has(camera.id) ? ' on' : ''}" data-hd="${escapeHtml(camera.id)}" aria-pressed="${this._hd.has(camera.id)}" title="${escapeHtml(t.hd_hint)}">${escapeHtml(t.hd)}</button>`
           : ''
+        const gear = `<button class="gear" data-settings="${escapeHtml(camera.id)}" title="${escapeHtml(t.settings)}" aria-label="${escapeHtml(t.settings)}">${this._icon('mdi:cog')}</button>`
         const chips = KINDS.filter((kind) => camera.sensors[kind]).map((kind) =>
           `<span class="chip${this._sensorOn(camera.sensors[kind]) ? ' on' : ''}" data-sensor-state="${escapeHtml(camera.sensors[kind])}" title="${escapeHtml(t[kind])}">${this._icon(ICONS[kind])}</span>`
         ).join('')
         return `<ha-card class="tile">
           <div class="live" data-live="${escapeHtml(camera.id)}"><span class="placeholder">${escapeHtml(camera.name)}</span></div>
-          <div class="caption"><span>${escapeHtml(camera.name)}</span><span class="chips">${hd}${chips}</span></div>
+          <div class="caption"><span>${escapeHtml(camera.name)}</span><span class="chips">${hd}${chips}${gear}</span></div>
         </ha-card>`
       }).join('')
       return `<div class="wide"><div class="sec" data-heading="${escapeHtml(t.cameras)}">${escapeHtml(t.cameras)}</div><div class="tiles">${tiles}</div></div>`
@@ -312,6 +333,135 @@
         <ha-card class="panel table"><table class="does"><thead><tr><th></th>${head}</tr></thead><tbody>${rows.join('')}</tbody></table></ha-card>${hint}</div>`
     }
 
+    // --- settings of one camera --------------------------------------------
+    //
+    // Whatever the camera's device exposes, drawn the way the lights and covers
+    // cards draw theirs: Home Assistant's own tile card per entity, with the one
+    // feature its kind of entity calls for (a switch or a light needs none: the tile
+    // itself is the switch), in a grid. Nothing
+    // is grouped or hidden by name (yet); the order is by kind of entity, then
+    // by name.
+
+    // Config and diagnostic entities are kept on purpose: for a camera they are
+    // most of its settings (sensitivity, volume, floodlight mode...). Only
+    // hidden ones go; disabled ones have no state.
+    _deviceEntities(camera) {
+      const registry = (this._hass && this._hass.entities) || {}
+      const states = (this._hass && this._hass.states) || {}
+      const device = registry[camera.entity] && registry[camera.entity].device_id
+      if (!device) return []
+      const rank = (id) => {
+        const at = SETTING_DOMAINS.indexOf(id.split('.')[0])
+        return at < 0 ? SETTING_DOMAINS.length : at
+      }
+      return Object.keys(registry)
+        .filter((id) => registry[id].device_id === device && !registry[id].hidden && !registry[id].hidden_by && states[id] && !HIDDEN_DOMAINS.includes(id.split('.')[0]))
+        .sort((a, b) => rank(a) - rank(b) || this._entityName(a, device).localeCompare(this._entityName(b, device)))
+    }
+
+    // The entity's name without the device's name in front of it ("E1 Outdoor SE PoE
+    // Record" -> "Record"): inside one camera's settings it only takes room. The
+    // device's registered name is tried first; when the entity names do not start
+    // with it (or the registry has no names), what all of the device's entity
+    // names start with in common.
+    _entityName(id, device) {
+      const state = this._hass.states[id]
+      const name = (state.attributes && state.attributes.friendly_name) || id
+      const registered = this._hass.devices && this._hass.devices[device]
+      const candidates = [registered && (registered.name_by_user || registered.name), this._commonPrefix(device)]
+      for (const prefix of candidates) {
+        if (prefix && name.length > prefix.length + 1 && name.startsWith(`${prefix} `)) return name.slice(prefix.length + 1)
+      }
+      return name
+    }
+
+    // The words every entity name of a device starts with (nothing with fewer than two names).
+    _commonPrefix(device) {
+      const registry = this._hass.entities || {}
+      const states = this._hass.states || {}
+      const names = Object.keys(registry)
+        .filter((id) => registry[id].device_id === device && states[id] && states[id].attributes && states[id].attributes.friendly_name)
+        .map((id) => states[id].attributes.friendly_name.split(' '))
+      if (names.length < 2) return ''
+      const common = []
+      for (let at = 0; names.every((words) => words[at] !== undefined && words[at] === names[0][at]); at += 1) common.push(names[0][at])
+      return common.join(' ')
+    }
+
+    // The tile config for one entity (annika-common's tileConfig, as the other cards use it).
+    _settingTile(id) {
+      const domain = id.split('.')[0]
+      const attrs = (this._hass.states[id] && this._hass.states[id].attributes) || {}
+      const t = this._texts
+      let features = []
+      const options = {}
+      // A switch or a light has no feature: tapping its tile turns it on and off.
+      if (domain === 'select') {
+        features = [{ type: 'select-options' }]
+      } else if (domain === 'number') {
+        features = [{ type: 'numeric-input', style: attrs.mode === 'box' ? 'buttons' : 'slider' }]
+      } else if (domain === 'siren') {
+        options.tap_action = { action: 'toggle', confirmation: { text: t.confirm_siren } }
+      } else if (domain === 'button' && attrs.device_class === 'restart') {
+        options.tap_action = { action: 'toggle', confirmation: { text: t.confirm_restart } }
+      }
+      const device = this._hass.entities[id] && this._hass.entities[id].device_id
+      return window.Annika.tileConfig({ entity: id, name: this._entityName(id, device), color: SETTINGS_COLOR }, { ...options, features })
+    }
+
+    _settingsHtml(config, t) {
+      const camera = config.cameras.find((c) => c.id === this._settings)
+      if (!camera) return ''
+      const empty = this._deviceEntities(camera).length === 0
+      return `<div class="wide">
+        <div class="settings-head">
+          <button class="hd back" data-back title="${escapeHtml(t.back)}">${this._icon('mdi:arrow-left')}${escapeHtml(t.back)}</button>
+          <div class="sec" data-heading="${escapeHtml(`${camera.name} · ${t.settings}`)}">${escapeHtml(camera.name)} · ${escapeHtml(t.settings)}</div>
+        </div>
+        <div class="annika-tile-row settings">
+          <ha-card class="tile live-tile"><div class="live" data-live="${escapeHtml(camera.id)}"><span class="placeholder">${escapeHtml(camera.name)}</span></div></ha-card>
+          <span class="settings-tiles" data-settings-tiles></span>
+        </div>
+        ${empty ? `<div class="muted empty">${escapeHtml(t.no_settings)}</div>` : ''}
+      </div>`
+    }
+
+    // The tiles are Home Assistant's own cards, built once per entity and put
+    // back into place after every render, like the live views.
+    async _mountSettings(config) {
+      const camera = config.cameras.find((c) => c.id === this._settings)
+      if (!camera || !window.loadCardHelpers) return
+      try {
+        const helpers = await window.loadCardHelpers()
+        const elements = []
+        for (const id of this._deviceEntities(camera)) {
+          if (!this._tiles[id]) {
+            const element = await helpers.createCardElement(this._settingTile(id))
+            element.hass = this._hass
+            this._tiles[id] = element
+          }
+          elements.push(this._tiles[id])
+        }
+        // Went back while these were being built: nothing to put them in.
+        const target = this._settings === camera.id && this.querySelector('[data-settings-tiles]')
+        if (target) target.replaceChildren(...elements)
+      } catch (err) {
+        // The camera's own tile stays.
+      }
+    }
+
+    _openSettings(id) {
+      this._settings = id
+      this._render(true)
+      if (this.scrollIntoView) this.scrollIntoView({ block: 'start' })
+    }
+
+    _closeSettings() {
+      this._settings = null
+      this._render(true)
+      if (this.scrollIntoView) this.scrollIntoView({ block: 'start' })
+    }
+
     _ago(iso) {
       const seconds = Math.round((new Date(iso) - Date.now()) / 1000)
       if (Math.abs(seconds) < 60) return this._texts.just_now
@@ -346,19 +496,73 @@
       return `<div class="wide"><div class="sec" data-heading="${escapeHtml(t.clips)}">${escapeHtml(t.clips)}</div><div class="carousel">${body}</div></div>`
     }
 
+    // The player is a modal <dialog>: it is drawn in the browser's top layer, so
+    // it fills the whole screen whatever Home Assistant's page puts around the
+    // card (a fixed box inside the card is placed against the card, not the
+    // screen). It lives next to the card's content, not in it, so drawing the
+    // card again (a new clip, a state change) does not restart the video.
     _playerHtml(t) {
       const playing = this._playing
-      if (!playing) return ''
       const media = playing.url
         ? `<video src="${escapeHtml(playing.url)}" controls autoplay playsinline></video>`
         : `<div class="status">${escapeHtml(playing.error ? t.cannot_play : t.loading)}</div>`
-      return `<div class="player" data-close-bg>
-        <div class="box">
-          ${media}
-          <div class="bar"><span>${escapeHtml(playing.clip.camera)} · ${escapeHtml(t[playing.clip.type] || playing.clip.type)}</span>
-          <span><button class="link danger" data-delete="${escapeHtml(playing.clip.id)}">${escapeHtml(t.delete)}</button>
-          <button class="link" data-close>${escapeHtml(t.close)}</button></span></div>
-        </div></div>`
+      return `<div class="top"><span class="title">${escapeHtml(playing.clip.camera)} · ${escapeHtml(t[playing.clip.type] || playing.clip.type)}</span>
+        <span><button class="link danger" data-delete="${escapeHtml(playing.clip.id)}">${escapeHtml(t.delete)}</button>
+        <button class="link" data-close>${escapeHtml(t.close)}</button></span></div>${media}`
+    }
+
+    _syncPlayer() {
+      const playing = this._playing
+      let dialog = this._dialog
+      if (!playing) {
+        this._playerKey = null
+        if (dialog) {
+          if (dialog.open) dialog.close()
+          dialog.replaceChildren()
+        }
+        return
+      }
+      if (!dialog) {
+        dialog = document.createElement('dialog')
+        dialog.className = 'annika-player'
+        // Escape closes a modal dialog by itself: forget the clip too.
+        dialog.addEventListener('close', () => {
+          if (this._playing) {
+            this._playing = null
+            this._syncPlayer()
+          }
+        })
+        dialog.addEventListener('click', (event) => {
+          const button = event.target.closest && event.target.closest('[data-close],[data-delete]')
+          if (!button) return
+          const id = button.dataset.delete
+          this._playing = null
+          this._syncPlayer()
+          if (id) this._service('delete_clip', { clip_id: id })
+        })
+        this._dialog = dialog
+        this.appendChild(dialog)
+      }
+      const key = JSON.stringify([playing.clip.id, playing.url, playing.error, this._texts.close])
+      if (key !== this._playerKey) {
+        this._playerKey = key
+        dialog.innerHTML = this._playerHtml(this._texts)
+      }
+      if (!dialog.open) dialog.showModal()
+    }
+
+    _bodyElement() {
+      if (!this._body) {
+        this._body = document.createElement('div')
+        this.appendChild(this._body)
+      }
+      return this._body
+    }
+
+    // Which entities the open camera's device has: when they change, the settings are drawn again.
+    _deviceKey(config) {
+      const camera = config.cameras.find((c) => c.id === this._settings)
+      return camera ? this._deviceEntities(camera).join(',') : ''
     }
 
     // --- rendering --------------------------------------------------------
@@ -368,15 +572,17 @@
       const stateObj = this._stateObj
       const t = this._texts
       if (!stateObj) {
-        this.innerHTML = `<ha-card><div style="padding:16px;color:var(--secondary-text-color)">${escapeHtml(fill(t.missing, { entity: this._config.entity }))}</div></ha-card>`
+        this._bodyElement().innerHTML = `<ha-card><div style="padding:16px;color:var(--secondary-text-color)">${escapeHtml(fill(t.missing, { entity: this._config.entity }))}</div></ha-card>`
         this._structure = ''
         return
       }
       const attrs = stateObj.attributes
       const config = attrs.config
       if (!config) return
+      // A camera that is no longer in the configuration has no settings to show.
+      if (this._settings && !config.cameras.some((camera) => camera.id === this._settings)) this._settings = null
       // HD updates its own tile directly; it must not rebuild the other streams.
-      const key = JSON.stringify([config, this._alarmModes, attrs.clips, attrs.image_base, t.cameras, this._playing && [this._playing.url, this._playing.error]])
+      const key = JSON.stringify([config, this._alarmModes, attrs.clips, attrs.image_base, t.cameras, this._settings, this._settings && this._deviceKey(config)])
       if (!force && key === this._structure) return
       this._structure = key
 
@@ -384,7 +590,7 @@
       // on a phone a shorter page would scroll itself back to the top.
       const keep = this.offsetHeight
       if (keep) this.style.minHeight = `${keep}px`
-      this.innerHTML = `
+      this._bodyElement().innerHTML = `
         <style>
           annika-cameras-card { display: block; container-type: inline-size; }
           .annika-cams { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; }
@@ -413,6 +619,9 @@
           .annika-cams .hd { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 999px;
             padding: 2px 10px; margin-right: 4px; font: inherit; font-size: 12px; cursor: pointer; }
           .annika-cams .hd.on { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); }
+          .annika-cams .gear { border: 0; background: transparent; color: var(--secondary-text-color); cursor: pointer; padding: 4px; margin-left: 2px;
+            --mdc-icon-size: 20px; display: inline-flex; border-radius: 50%; }
+          .annika-cams .gear:hover { color: var(--primary-text-color); }
           .annika-cams .chip { --mdc-icon-size: 18px; display: inline-flex; color: var(--disabled-color); transition: color .2s; }
           .annika-cams .chip.on { color: var(--primary-color); filter: drop-shadow(0 0 4px color-mix(in srgb, var(--primary-color) 70%, transparent)); }
 
@@ -440,6 +649,19 @@
           .annika-cams .does .own { color: var(--primary-color); font-size: 12px; margin-left: 6px; }
           .annika-cams select.rule.off { color: var(--secondary-text-color); }
 
+          .annika-cams .settings-head { display: flex; align-items: center; gap: 12px; }
+          .annika-cams .settings-head .sec { padding-top: 0; flex: 1; min-width: 0; }
+          .annika-cams .hd.back { display: inline-flex; align-items: center; gap: 4px; --mdc-icon-size: 18px; margin-right: 0; padding-left: 8px; }
+          /* The lights and covers cards' tile row (the same spacing tokens), with the columns
+             fixed instead of fitted: on a desktop three columns of two tiles each, two tiles
+             on a tablet, one on a phone. The live view takes the first column (two tiles
+             wide) over several rows, and the tiles flow beside it. */
+          .annika-cams .annika-tile-row { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
+            column-gap: var(--ha-section-column-gap, 8px); row-gap: var(--ha-section-row-gap, 8px); }
+          .annika-cams .annika-tile-row > * { min-width: 0; }
+          .annika-cams .annika-tile-row .settings-tiles { display: contents; }
+          .annika-cams .annika-tile-row > .live-tile { grid-column: span 2; grid-row: span 4; align-self: start; }
+
           .annika-cams .carousel { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 8px; scroll-snap-type: x proximity; }
           .annika-cams .clip { flex: none; width: 220px; background: var(--ha-card-background, var(--card-background-color)); border: 0; border-radius: var(--ha-card-border-radius, 0); padding: 0;
             text-align: left; cursor: pointer; color: inherit; font: inherit; overflow: hidden; scroll-snap-align: start; }
@@ -453,17 +675,28 @@
           .annika-cams .what { display: flex; align-items: center; gap: 6px; font-size: 14px; --mdc-icon-size: 16px; }
           .annika-cams .empty { padding: 12px 0; }
 
-          .annika-cams .player { position: fixed; inset: 0; z-index: 9; background: rgba(0,0,0,.7); display: flex; align-items: center; justify-content: center; padding: 16px; }
-          .annika-cams .player .box { background: var(--ha-card-background, var(--card-background-color)); border-radius: var(--ha-card-border-radius, 0); overflow: hidden; width: min(900px, 100%); }
-          .annika-cams .player video { width: 100%; display: block; background: #000; max-height: 70vh; }
-          .annika-cams .player .status { aspect-ratio: 16 / 9; display: flex; align-items: center; justify-content: center; color: var(--secondary-text-color); }
-          .annika-cams .player .bar { display: flex; align-items: center; justify-content: space-between; padding: 8px 14px; font-size: 14px; }
+          dialog.annika-player { position: fixed; inset: 0; margin: 0; padding: 0; border: 0; width: 100vw; height: 100vh; height: 100dvh; max-width: none; max-height: none;
+            background: #000; color: #fff; overflow: hidden; box-sizing: border-box; }
+          dialog.annika-player[open] { display: flex; flex-direction: column; }
+          dialog.annika-player::backdrop { background: #000; }
+          .annika-player .top { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 15px;
+            padding: max(8px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 8px max(12px, env(safe-area-inset-left)); background: rgba(255,255,255,.08); }
+          .annika-player video { flex: 1 1 auto; min-height: 0; width: 100%; display: block; background: #000; object-fit: contain; padding-bottom: env(safe-area-inset-bottom); box-sizing: border-box; }
+          .annika-player .status { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,.7); }
+          .annika-player .link { background: none; border: 0; color: #fff; font: inherit; font-size: 15px; cursor: pointer; padding: 6px 10px; }
+          .annika-player .link.danger { color: var(--error-color, #ff6b5e); }
           .annika-cams .link { background: none; border: 0; color: var(--primary-color); font: inherit; font-size: 14px; cursor: pointer; padding: 4px 8px; }
           .annika-cams .link.danger { color: var(--error-color, #db4437); }
 
+          @container (max-width: 1100px) {
+            .annika-cams .annika-tile-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .annika-cams .annika-tile-row > .live-tile { grid-column: auto; grid-row: span 3; }
+          }
           @container (max-width: 800px) {
             .annika-cams { grid-template-columns: minmax(0, 1fr); }
             .annika-cams .tiles { grid-template-columns: minmax(0, 1fr); }
+            .annika-cams .annika-tile-row { grid-template-columns: minmax(0, 1fr); }
+            .annika-cams .annika-tile-row > .live-tile { grid-column: auto; grid-row: auto; }
             .annika-cams ha-card.panel.table { padding: 4px 4px; }
             .annika-cams .recording .col.nums { border-left: 0; padding-left: 0; border-top: 1px solid var(--divider-color); padding-top: 12px; }
             .annika-cams .numbers { grid-template-columns: 1fr; }
@@ -480,16 +713,15 @@
           }
         </style>
         <div class="annika-cams">
-          ${this._camerasHtml(config, t)}
-          ${this._recordingHtml(config, t)}
-          ${this._doesHtml(config, t)}
-          ${this._clipsHtml(attrs, t)}
+          ${this._settings
+            ? this._settingsHtml(config, t)
+            : `${this._camerasHtml(config, t)}${this._recordingHtml(config, t)}${this._doesHtml(config, t)}${this._clipsHtml(attrs, t)}`}
         </div>
-        ${this._playerHtml(t)}
       `
       this._bind(config, attrs)
       this._signImages()
-      this._mountLive(config)
+      if (this._settings) this._mountSettings(config)
+      this._mountLive(this._settings ? { cameras: config.cameras.filter((camera) => camera.id === this._settings) } : config)
       this._headings().then(() => requestAnimationFrame(() => { this.style.minHeight = '' }))
     }
 
@@ -573,7 +805,7 @@
 
     async _play(clip, attrs) {
       this._playing = { clip, url: null, error: false }
-      this._render(true)
+      this._syncPlayer()
       try {
         if (!attrs.media_base) throw new Error('no media folder')
         const result = await this._hass.callWS({
@@ -586,7 +818,7 @@
       } catch (err) {
         if (this._playing && this._playing.clip.id === clip.id) this._playing = { clip, url: null, error: true }
       }
-      this._render(true)
+      this._syncPlayer()
     }
 
     _bind(config, attrs) {
@@ -610,6 +842,9 @@
         this._mountLive({ cameras: [camera] })
       })
 
+      on('[data-settings]', 'click', (el) => this._openSettings(el.dataset.settings))
+      on('[data-back]', 'click', () => this._closeSettings())
+
       // An empty value gives the detection back to the camera's group.
       on('select[data-camera]', 'change', (el) =>
         this._service('set_camera_rule', { camera: el.dataset.camera, type: el.dataset.kind, action: el.value || null }))
@@ -627,21 +862,6 @@
       on('[data-clip]', 'click', (el) => {
         const clip = (attrs.clips || []).find((c) => c.id === el.dataset.clip)
         if (clip) this._play(clip, attrs)
-      })
-      on('[data-close]', 'click', () => {
-        this._playing = null
-        this._render(true)
-      })
-      on('[data-close-bg]', 'click', (el, e) => {
-        if (e.target === el) {
-          this._playing = null
-          this._render(true)
-        }
-      })
-      on('[data-delete]', 'click', (el) => {
-        this._playing = null
-        this._service('delete_clip', { clip_id: el.dataset.delete })
-        this._render(true)
       })
     }
   }
