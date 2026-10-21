@@ -37,6 +37,26 @@ warning is a trigger. A trigger trips the panel (pending, then triggered), and
 the outputs with a trigger switch on until somebody disarms. Disarming resets
 the count and switches off whatever the rules switched on.
 
+A warning can ask for more than one detection first. `confirm` is a gate in
+front of the warning: a detection becomes a signal, and the warning only goes
+once `count` signals of a zone arrive within `window_seconds`. Cameras are the
+use case: one flying insect makes one short blip, a person makes several
+detections or stays in view.
+
+    warning:
+      confirm: {count: 2, window_seconds: 60, min_seconds: 2, recount_seconds: 10}
+
+`min_seconds` is how long a sensor has to stay on for its detection to count
+(a shorter blip is dropped). `recount_seconds` counts it again every that many
+seconds for as long as the sensor stays on, so a person who stands in front of
+a camera keeps adding up (and so does a sensor stuck on: when something fails
+the alarm sounds, it does not stay quiet). A zone, or one of its sensors, can
+set its own `confirm` and the rest of its values come from the level above.
+The defaults (count 1, min 0, recount 0) leave every detection as an
+immediate warning, as it always was. Trigger rules never go through the gate.
+Each warning needs its own `count` signals. Detections that are still waiting
+for the rest are not decisions: they are not logged.
+
 Every detection that is handled, ignored or escalated is a line in the
 decisions list and in the logbook, so "why did the siren sound?" has an answer.
 
@@ -83,6 +103,8 @@ MAX_SECONDS = 24 * 3600
 
 DEFAULT_LIMIT = 3
 DEFAULT_WINDOW_MINUTES = 30
+DEFAULT_CONFIRM = {"count": 1, "window_seconds": 60, "min_seconds": 0, "recount_seconds": 0}
+CONFIRM_FIELDS = tuple(DEFAULT_CONFIRM)
 
 
 def slug(value: str) -> str:
@@ -98,12 +120,23 @@ _RULE = vol.All(_off, vol.In(RULES))
 _MODE_RULES = vol.Schema({vol.Optional(mode): _RULE for mode in MODES})
 _ENTITIES = vol.All(cv.ensure_list, [cv.entity_id], vol.Length(min=1))
 
+_CONFIRM_VALUES = {
+    "count": vol.All(vol.Coerce(int), vol.Range(min=1, max=20)),
+    "window_seconds": vol.All(vol.Coerce(int), vol.Range(min=1, max=3600)),
+    "min_seconds": vol.All(vol.Coerce(int), vol.Range(min=0, max=3600)),
+    "recount_seconds": vol.All(vol.Coerce(int), vol.Range(min=0, max=3600)),
+}
+# The global one starts from the defaults; a zone or a sensor only says what it changes.
+CONFIRM_SCHEMA = vol.Schema({vol.Optional(k, default=DEFAULT_CONFIRM[k]): v for k, v in _CONFIRM_VALUES.items()})
+_CONFIRM_OVERRIDE = vol.Schema({vol.Optional(k): v for k, v in _CONFIRM_VALUES.items()})
+
 SENSOR_SCHEMA = vol.Schema(
     {
         vol.Required("name"): cv.string,
         vol.Required("entities"): _ENTITIES,
         vol.Optional("detail"): cv.string,
         vol.Optional("rules", default={}): _MODE_RULES,
+        vol.Optional("confirm", default={}): _CONFIRM_OVERRIDE,
     }
 )
 
@@ -111,6 +144,7 @@ ZONE_SCHEMA = vol.Schema(
     {
         vol.Required("name"): cv.string,
         vol.Optional("rules", default={}): _MODE_RULES,
+        vol.Optional("confirm", default={}): _CONFIRM_OVERRIDE,
         vol.Required("sensors"): vol.All(cv.ensure_list, [SENSOR_SCHEMA]),
     }
 )
@@ -142,6 +176,7 @@ RULES_SCHEMA = {
             vol.Optional("window_minutes", default=DEFAULT_WINDOW_MINUTES): vol.All(
                 vol.Coerce(int), vol.Range(min=1, max=24 * 60)
             ),
+            vol.Optional("confirm", default={}): CONFIRM_SCHEMA,
         }
     ),
     vol.Optional("notification", default={}): vol.Schema(
@@ -227,6 +262,7 @@ class _Sensor:
         self.detail = config.get("detail")
         self.entities: list[str] = config["entities"]
         self.rules: dict[str, str | None] = {m: config["rules"].get(m) for m in MODES}
+        self.confirm: dict[str, int] = dict(config.get("confirm", {}))
 
     @property
     def key(self) -> str:
@@ -241,6 +277,9 @@ class _Zone:
         self.id = slug(config["name"])
         self.name = config["name"]
         self.rules: dict[str, str] = {m: config["rules"].get(m, "off") for m in MODES}
+        self.confirm: dict[str, int] = dict(config.get("confirm", {}))
+        # The signals waiting for the rest of a warning's `count`, by time.
+        self.signals: list[datetime] = []
         self.sensors = [_Sensor(self, sensor) for sensor in config["sensors"]]
 
 
@@ -264,6 +303,9 @@ class AnnikaAlarmRules:
         self.panel = panel
         self.limit: int = config["warning"]["limit"]
         self.window_minutes: int = config["warning"]["window_minutes"]
+        self.confirm: dict[str, int] = {**DEFAULT_CONFIRM, **config["warning"].get("confirm", {})}
+        # While a sensor stays on: its pending timer, by (sensor, entity).
+        self._runs: dict[tuple[str, str], Callable[[], None]] = {}
         notification = config["notification"]
         self.notify_view: str | None = notification.get("view")
         self.notify_warning: bool = notification["warning"]
@@ -308,6 +350,7 @@ class AnnikaAlarmRules:
         if self._cancel_expiry is not None:
             self._cancel_expiry()
         self._stop_repeat()
+        self._reset_confirm()
         for output in self.outputs:
             if output.cancel is not None:
                 output.cancel()
@@ -320,6 +363,14 @@ class AnnikaAlarmRules:
         warning = saved.get("warning", {})
         self.limit = warning.get("limit", self.limit)
         self.window_minutes = warning.get("window_minutes", self.window_minutes)
+        confirm = warning.get("confirm", {})
+        for name in CONFIRM_FIELDS:
+            value = confirm.get(name)
+            if isinstance(value, int) and not isinstance(value, bool):
+                try:
+                    self.confirm[name] = _CONFIRM_VALUES[name](value)
+                except vol.Invalid:
+                    pass
         notify = saved.get("notification", {})
         self.notify_warning = notify.get("warning", self.notify_warning)
         self.notify_trigger = notify.get("trigger", self.notify_trigger)
@@ -349,7 +400,11 @@ class AnnikaAlarmRules:
 
     def _saved(self) -> dict[str, Any]:
         return {
-            "warning": {"limit": self.limit, "window_minutes": self.window_minutes},
+            "warning": {
+                "limit": self.limit,
+                "window_minutes": self.window_minutes,
+                "confirm": dict(self.confirm),
+            },
             "notification": {
                 "warning": self.notify_warning,
                 "trigger": self.notify_trigger,
@@ -406,11 +461,27 @@ class AnnikaAlarmRules:
                 setattr(output, name, value)
         self._changed()
 
-    def set_warning(self, limit: int | None = None, window_minutes: int | None = None) -> None:
+    def set_warning(
+        self,
+        limit: int | None = None,
+        window_minutes: int | None = None,
+        confirm_count: int | None = None,
+        confirm_window_seconds: int | None = None,
+        confirm_min_seconds: int | None = None,
+        confirm_recount_seconds: int | None = None,
+    ) -> None:
         if limit is not None:
             self.limit = limit
         if window_minutes is not None:
             self.window_minutes = window_minutes
+        for name, value in (
+            ("count", confirm_count),
+            ("window_seconds", confirm_window_seconds),
+            ("min_seconds", confirm_min_seconds),
+            ("recount_seconds", confirm_recount_seconds),
+        ):
+            if value is not None:
+                self.confirm[name] = value
         self._reschedule_expiry()
         self._changed()
 
@@ -437,12 +508,22 @@ class AnnikaAlarmRules:
     @callback
     def _sensor_changed(self, event: Event) -> None:
         new, old = event.data.get("new_state"), event.data.get("old_state")
-        if new is None or new.state != "on" or old is None or old.state != "off":
+        entity_id = event.data["entity_id"]
+        if new is None:
             return
-        for sensor in self._by_entity.get(event.data["entity_id"], []):
-            self._detected(sensor)
+        if new.state != "on":
+            # Off (or gone): what was waiting for this sensor to stay on is over.
+            for sensor in self._by_entity.get(entity_id, []):
+                self._cancel_run((sensor.key, entity_id))
+            return
+        # Any way into "on" is a detection (off, unavailable, unknown); an
+        # update that leaves it on, or an entity showing up already on, is not.
+        if old is None or old.state == "on":
+            return
+        for sensor in self._by_entity.get(entity_id, []):
+            self._detected(sensor, entity_id)
 
-    def _detected(self, sensor: _Sensor) -> None:
+    def _detected(self, sensor: _Sensor, entity_id: str) -> None:
         # Only an armed panel reacts: not while arming (the person is leaving),
         # and not once it is already pending or triggered.
         if not self.panel.armed:
@@ -456,8 +537,111 @@ class AnnikaAlarmRules:
         if rule == "trigger":
             self._decide("trigger", self._text("trigger", **values))
             self.panel.trigger()
-        else:
+            return
+        settings = self._confirm(sensor)
+        if settings["count"] <= 1 and not settings["min_seconds"] and not settings["recount_seconds"]:
+            # No gate: the detection is the warning, right now.
             self._warn(sensor, mode, values)
+            return
+        self._begin_run(sensor, entity_id, settings)
+
+    # --- the confirmation gate ----------------------------------------------
+
+    def _confirm(self, sensor: _Sensor) -> dict[str, int]:
+        """A sensor's confirm settings: its own, else its zone's, else the global ones."""
+
+        return {
+            name: next(
+                (
+                    source[name]
+                    for source in (sensor.confirm, sensor.zone.confirm)
+                    if source.get(name) is not None
+                ),
+                self.confirm[name],
+            )
+            for name in CONFIRM_FIELDS
+        }
+
+    def _begin_run(self, sensor: _Sensor, entity_id: str, settings: dict[str, int]) -> None:
+        """A warning sensor just went on: its first signal comes after `min_seconds`
+        (right now when that is 0), then one more every `recount_seconds` while it stays on."""
+
+        key = (sensor.key, entity_id)
+        self._cancel_run(key)
+        if settings["min_seconds"]:
+            self._schedule_run(key, sensor, entity_id, settings["min_seconds"])
+            return
+        self._signal(sensor)
+        if settings["recount_seconds"] and self.panel.armed:
+            self._schedule_run(key, sensor, entity_id, settings["recount_seconds"])
+
+    def _schedule_run(self, key: tuple[str, str], sensor: _Sensor, entity_id: str, seconds: int) -> None:
+        self._runs[key] = async_call_later(
+            self.hass,
+            seconds,
+            callback(lambda _now, k=key, s=sensor, e=entity_id: self._run_due(k, s, e)),
+        )
+
+    @callback
+    def _run_due(self, key: tuple[str, str], sensor: _Sensor, entity_id: str) -> None:
+        self._runs.pop(key, None)
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state != "on" or not self.panel.armed:
+            return
+        self._signal(sensor)
+        recount = self._confirm(sensor)["recount_seconds"]
+        if recount and self.panel.armed:
+            self._schedule_run(key, sensor, entity_id, recount)
+
+    def _cancel_run(self, key: tuple[str, str]) -> None:
+        if (cancel := self._runs.pop(key, None)) is not None:
+            cancel()
+
+    def _reset_confirm(self) -> None:
+        """Forget what the gate was waiting for (disarmed, tripped, stopping)."""
+
+        for cancel in list(self._runs.values()):
+            cancel()
+        self._runs.clear()
+        for zone in self.zones:
+            zone.signals.clear()
+
+    def _signal(self, sensor: _Sensor) -> None:
+        """One counted detection. The warning goes once its zone has `count` of them
+        inside `window_seconds`; each warning starts the count over."""
+
+        if not self.panel.armed:
+            return
+        mode = self.panel.mode
+        if sensor.rule(mode) != "warning":
+            return
+        settings = self._confirm(sensor)
+        now = dt_util.utcnow()
+        zone = sensor.zone
+        window = timedelta(seconds=settings["window_seconds"])
+        zone.signals = [at for at in zone.signals if now - at <= window]
+        zone.signals.append(now)
+        if len(zone.signals) < settings["count"]:
+            return
+        zone.signals.clear()
+        self._warn(sensor, mode, {"sensor": sensor.name, "mode": self._text(f"mode_{mode}")})
+
+    def _resume_sensors(self) -> None:
+        """The panel just armed: a sensor that is already on keeps counting, so one
+        that is stuck on (a person who stayed, or a failure) still ends in an alarm.
+        Only for sensors that recount; without it a sensor needs a new detection."""
+
+        mode = self.panel.mode
+        for sensor in (s for zone in self.zones for s in zone.sensors):
+            if sensor.rule(mode) != "warning":
+                continue
+            settings = self._confirm(sensor)
+            if not settings["recount_seconds"]:
+                continue
+            for entity_id in sensor.entities:
+                state = self.hass.states.get(entity_id)
+                if state is not None and state.state == "on":
+                    self._begin_run(sensor, entity_id, settings)
 
     def _warn(self, sensor: _Sensor, mode: str, values: dict) -> None:
         now = dt_util.utcnow()
@@ -520,6 +704,8 @@ class AnnikaAlarmRules:
             return
         if new != "triggered":
             self._stop_repeat()
+        if not new.startswith("armed_"):
+            self._reset_confirm()
         if new == "arming":
             self._arming_actor = self._actor_for("alarm_arm")
         if new.startswith("armed_"):
@@ -529,6 +715,7 @@ class AnnikaAlarmRules:
                 "info",
                 self._text("armed", mode=self._text(f"mode_{new[len('armed_'):]}"), by=self._by(actor)),
             )
+            self._resume_sensors()
         if new == "triggered":
             self._decide("trigger", self._text("triggered"))
             for output in self.outputs:
@@ -713,6 +900,7 @@ class AnnikaAlarmRules:
                     "window_minutes": self.window_minutes,
                     "count": self.count,
                     "resets_at": self.resets_at.isoformat() if self.resets_at else None,
+                    "confirm": dict(self.confirm),
                 },
                 "notification": {
                     "enabled": bool(self.notify_view),
@@ -738,6 +926,7 @@ class AnnikaAlarmRules:
                         "id": zone.id,
                         "name": zone.name,
                         "rules": zone.rules,
+                        "confirm": zone.confirm,
                         "sensors": [
                             {
                                 "id": sensor.key,
@@ -745,6 +934,7 @@ class AnnikaAlarmRules:
                                 "detail": sensor.detail,
                                 "entities": sensor.entities,
                                 "rules": sensor.rules,
+                                "confirm": sensor.confirm,
                             }
                             for sensor in zone.sensors
                         ],

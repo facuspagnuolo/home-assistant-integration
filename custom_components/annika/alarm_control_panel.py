@@ -124,6 +124,10 @@ async def async_setup_platform(
         {
             vol.Optional("limit"): vol.All(vol.Coerce(int), vol.Range(min=1, max=20)),
             vol.Optional("window_minutes"): vol.All(vol.Coerce(int), vol.Range(min=1, max=1440)),
+            vol.Optional("confirm_count"): vol.All(vol.Coerce(int), vol.Range(min=1, max=20)),
+            vol.Optional("confirm_window_seconds"): vol.All(vol.Coerce(int), vol.Range(min=1, max=3600)),
+            vol.Optional("confirm_min_seconds"): vol.All(vol.Coerce(int), vol.Range(min=0, max=3600)),
+            vol.Optional("confirm_recount_seconds"): vol.All(vol.Coerce(int), vol.Range(min=0, max=3600)),
         },
         "async_set_warning",
     )

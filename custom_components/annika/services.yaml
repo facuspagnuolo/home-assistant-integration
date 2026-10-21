@@ -130,6 +130,10 @@ set_warning:
   fields:
     limit: {name: Limit, selector: {number: {min: 1, max: 20}}}
     window_minutes: {name: Window minutes, selector: {number: {min: 1, max: 1440}}}
+    confirm_count: {name: Detections per warning, selector: {number: {min: 1, max: 20}}}
+    confirm_window_seconds: {name: Seconds to gather them, selector: {number: {min: 1, max: 3600}}}
+    confirm_min_seconds: {name: Seconds a sensor must stay on, selector: {number: {min: 0, max: 3600}}}
+    confirm_recount_seconds: {name: Count again every (seconds on), selector: {number: {min: 0, max: 3600}}}
 set_notification:
   name: Set alarm notifications
   description: Whether warnings and triggers notify the people of the house.

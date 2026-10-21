@@ -241,17 +241,21 @@ async def test_detections_while_arming_are_ignored(hass):
     assert state(hass) == "arming" and on == [] and decisions(hass) == []
 
 
-async def test_only_a_real_off_to_on_counts(hass):
+async def test_any_way_into_on_counts_but_staying_on_does_not(hass):
     panel, on, off = await setup_rules(hass)
     await armed(hass, "night")
+    # A sensor that comes back from unavailable already on is a detection.
     hass.states.async_set(DOOR, "unavailable")
     hass.states.async_set(DOOR, "on")
     await hass.async_block_till_done()
-    assert state(hass) == "armed_night"
-    hass.states.async_set(DOOR, "off")
-    hass.states.async_set(DOOR, "on")
-    await hass.async_block_till_done()
     assert state(hass) == "triggered"
+    await call(hass, "alarm_disarm", code="1234")
+    await armed(hass, "away")
+    detect(hass, CAM1)
+    # An update that leaves it on (a new attribute) is not another one.
+    hass.states.async_set(CAM1, "on", {"battery": 80})
+    await hass.async_block_till_done()
+    assert panel.rules.count == 1
 
 
 async def test_a_siren_a_trigger_turned_on_is_not_cut_by_the_warning_timer(hass, freezer):
@@ -479,7 +483,12 @@ async def test_a_restored_armed_panel_still_reacts_and_disarming_resets(hass):
 async def test_schema_defaults_and_validation():
     parsed = ALARM_SCHEMA({"code": "1234"})
     assert parsed["zones"] == [] and parsed["outputs"] == []
-    assert parsed["warning"] == {"limit": 3, "window_minutes": 30}
+    assert parsed["warning"] == {
+        "limit": 3,
+        "window_minutes": 30,
+        # No gate by default: every detection is a warning, as it always was.
+        "confirm": {"count": 1, "window_seconds": 60, "min_seconds": 0, "recount_seconds": 0},
+    }
     with pytest.raises(Exception):
         ALARM_SCHEMA({"code": "1234", "zones": [{"name": "X", "rules": {"away": "loud"}, "sensors": []}]})
     with pytest.raises(Exception):
@@ -676,3 +685,227 @@ async def test_arming_after_a_countdown_logs_once_it_is_armed(hass, freezer):
     await advance(hass, freezer, 31)
     assert state(hass) == "armed_away"
     assert decisions(hass) == ["Armed · away"]
+
+
+# --- the confirmation gate ---------------------------------------------------
+
+
+def gated(count=2, window=60, minimum=0, recount=0, limit=3, zone=None, sensor=None):
+    """CONFIG with a confirm gate; `zone` and `sensor` set the Exterior zone's / Camera 1's own."""
+
+    config = {
+        **CONFIG,
+        "warning": {
+            "limit": limit,
+            "window_minutes": 30,
+            "confirm": {"count": count, "window_seconds": window, "min_seconds": minimum, "recount_seconds": recount},
+        },
+        "zones": [dict(z) for z in CONFIG["zones"]],
+    }
+    if zone is not None:
+        config["zones"][0]["confirm"] = zone
+    if sensor is not None:
+        config["zones"][0]["sensors"] = [dict(s) for s in CONFIG["zones"][0]["sensors"]]
+        config["zones"][0]["sensors"][0]["confirm"] = sensor
+    return config
+
+
+async def detected(hass):
+    detect(hass, CAM1)
+    await hass.async_block_till_done()
+
+
+async def test_by_default_there_is_no_gate_and_no_timers(hass):
+    panel, on, off = await setup_rules(hass)
+    await armed(hass)
+    await detected(hass)
+    assert panel.rules.count == 1 and panel.rules._runs == {}
+    assert panel.rules.confirm == {"count": 1, "window_seconds": 60, "min_seconds": 0, "recount_seconds": 0}
+
+
+async def test_one_detection_waits_for_a_second_inside_the_window(hass, freezer):
+    panel, on, off = await setup_rules(hass, gated())
+    await armed(hass)
+    await detected(hass)
+    # Waiting is not a decision: nothing switched on, nothing logged.
+    assert panel.rules.count == 0 and on == []
+    assert decisions(hass) == ["Armed · away"]
+    await advance(hass, freezer, 30)
+    await detected(hass)
+    assert panel.rules.count == 1
+    assert decisions(hass)[0] == "Camera 1 · away · warning 1 of 3"
+    assert "switch.sirenas" in entities(on)
+
+
+async def test_a_detection_that_the_window_left_behind_does_not_count(hass, freezer):
+    panel, on, off = await setup_rules(hass, gated())
+    await armed(hass)
+    await detected(hass)
+    await advance(hass, freezer, 61)
+    await detected(hass)
+    assert panel.rules.count == 0 and on == []
+    await advance(hass, freezer, 5)
+    await detected(hass)
+    assert panel.rules.count == 1
+
+
+async def test_every_warning_needs_its_own_detections(hass, freezer):
+    panel, on, off = await setup_rules(hass, gated())
+    await armed(hass)
+    for expected in (0, 1, 1, 2):
+        await detected(hass)
+        assert panel.rules.count == expected
+        await advance(hass, freezer, 2)
+
+
+async def test_detections_of_the_zones_cameras_add_up(hass, freezer):
+    panel, on, off = await setup_rules(hass, gated())
+    await armed(hass)
+    await detected(hass)  # Camera 1
+    detect(hass, CAM2)  # Camera 2, same zone: a person walking by both
+    await hass.async_block_till_done()
+    assert panel.rules.count == 1
+    assert decisions(hass)[0] == "Camera 2 · away · warning 1 of 3"
+
+
+async def test_a_trigger_rule_never_waits(hass):
+    panel, on, off = await setup_rules(hass, gated(count=5))
+    await armed(hass, "away")
+    detect(hass, OFFICE)
+    await hass.async_block_till_done()
+    assert state(hass) == "triggered"
+
+
+async def test_a_zone_or_a_sensor_can_set_its_own_gate(hass):
+    # The zone says no gate; the global one wants 2.
+    panel, *_ = await setup_rules(hass, gated(count=2, zone={"count": 1}))
+    await armed(hass)
+    await detected(hass)
+    assert panel.rules.count == 1
+
+
+async def test_a_sensor_overrides_its_zone_field_by_field(hass, freezer):
+    config = gated(count=1, zone={"count": 3}, sensor={"count": 2})
+    panel, *_ = await setup_rules(hass, config)
+    await armed(hass)
+    await detected(hass)
+    assert panel.rules.count == 0
+    await detected(hass)
+    assert panel.rules.count == 1  # its own 2, not the zone's 3
+    detect(hass, CAM2)  # Camera 2 has no own gate: the zone's 3
+    await hass.async_block_till_done()
+    assert panel.rules.count == 1
+
+
+async def test_a_blip_shorter_than_min_seconds_is_dropped(hass, freezer):
+    panel, on, off = await setup_rules(hass, gated(count=1, minimum=2))
+    await armed(hass)
+    await detected(hass)
+    assert panel.rules.count == 0  # not yet: it has to stay on
+    await advance(hass, freezer, 1)
+    hass.states.async_set(CAM1, "off")
+    await advance(hass, freezer, 5)
+    assert panel.rules.count == 0 and panel.rules._runs == {}
+    # One that stays on counts, once.
+    await detected(hass)
+    await advance(hass, freezer, 3)
+    assert panel.rules.count == 1
+
+
+async def test_a_sensor_that_stays_on_keeps_adding_up_until_the_alarm(hass, freezer):
+    config = gated(count=2, minimum=2, recount=10)
+    panel, on, off = await setup_rules(hass, config)
+    await armed(hass)
+    await detected(hass)
+    await advance(hass, freezer, 3)  # first signal, still waiting
+    assert panel.rules.count == 0
+    counts = []
+    for _ in range(6):
+        await advance(hass, freezer, 11)
+        counts.append(panel.rules.count)
+    assert counts == [1, 1, 2, 2, 3, 3]
+    assert state(hass) == "armed_away"
+    await advance(hass, freezer, 11)
+    await advance(hass, freezer, 11)
+    assert state(hass) == "triggered"
+    assert decisions(hass)[1] == "Camera 1 · away · warning limit reached, trigger"
+
+
+async def test_recounting_stops_when_the_sensor_goes_off(hass, freezer):
+    panel, *_ = await setup_rules(hass, gated(count=1, minimum=0, recount=10))
+    await armed(hass)
+    await detected(hass)
+    assert panel.rules.count == 1
+    hass.states.async_set(CAM1, "off")
+    await advance(hass, freezer, 60)
+    assert panel.rules.count == 1 and panel.rules._runs == {}
+
+
+async def test_disarming_forgets_what_the_gate_was_waiting_for(hass, freezer):
+    panel, *_ = await setup_rules(hass, gated(count=2, recount=10))
+    await armed(hass)
+    await detected(hass)
+    assert panel.rules._runs and panel.rules.zones[0].signals
+    hass.states.async_set(CAM1, "off")
+    await call(hass, "alarm_disarm", code="1234")
+    assert panel.rules._runs == {} and panel.rules.zones[0].signals == []
+    await armed(hass)
+    await detected(hass)
+    assert panel.rules.count == 0  # the earlier one did not carry over
+
+
+async def test_a_sensor_already_on_when_it_arms_keeps_counting_when_it_recounts(hass, freezer):
+    panel, *_ = await setup_rules(hass, gated(count=1, recount=10))
+    hass.states.async_set(CAM1, "on")  # while disarmed: nobody is listening yet
+    await hass.async_block_till_done()
+    assert panel.rules.count == 0
+    await armed(hass)
+    assert panel.rules.count == 1
+    for _ in range(3):
+        await advance(hass, freezer, 11)
+    assert state(hass) == "triggered"
+
+
+async def test_a_sensor_already_on_when_it_arms_is_as_before_without_a_recount(hass, freezer):
+    panel, *_ = await setup_rules(hass)
+    hass.states.async_set(CAM1, "on")
+    await hass.async_block_till_done()
+    await armed(hass)
+    await advance(hass, freezer, 120)
+    assert panel.rules.count == 0 and state(hass) == "armed_away"
+
+
+async def test_the_gate_is_edited_stored_and_shown_in_the_attributes(hass, freezer, hass_storage):
+    panel, *_ = await setup_rules(hass)
+    await hass.services.async_call(
+        DOMAIN,
+        "set_warning",
+        {"entity_id": ENTITY, "confirm_count": 2, "confirm_min_seconds": 2, "confirm_recount_seconds": 10},
+        blocking=True,
+    )
+    expected = {"count": 2, "window_seconds": 60, "min_seconds": 2, "recount_seconds": 10}
+    assert hass.states.get(ENTITY).attributes["config"]["warning"]["confirm"] == expected
+    await armed(hass)
+    await detected(hass)
+    assert panel.rules.count == 0  # it waits now
+    await panel.rules.async_stop()
+    assert hass_storage["annika.alarm_rules"]["data"]["warning"]["confirm"] == expected
+
+
+async def test_stored_gate_settings_win_over_the_yaml_and_bad_ones_are_ignored(hass, hass_storage):
+    hass_storage["annika.alarm_rules"] = {
+        "version": 1,
+        "data": {"warning": {"confirm": {"count": 4, "min_seconds": "x", "recount_seconds": 99999}}},
+    }
+    panel, *_ = await setup_rules(hass, gated(count=2, minimum=1))
+    assert panel.rules.confirm["count"] == 4
+    assert panel.rules.confirm["min_seconds"] == 1  # not a number: the YAML stays
+    assert panel.rules.confirm["recount_seconds"] == 0  # out of range: the YAML stays
+
+
+def test_the_gate_schema_validates_its_numbers():
+    parsed = ALARM_SCHEMA({"code": "1234", "warning": {"confirm": {"count": 2, "min_seconds": 2, "recount_seconds": 10}}})
+    assert parsed["warning"]["confirm"] == {"count": 2, "window_seconds": 60, "min_seconds": 2, "recount_seconds": 10}
+    for bad in ({"count": 0}, {"min_seconds": -1}, {"recount_seconds": 9999}, {"window_seconds": 0}):
+        with pytest.raises(Exception):
+            ALARM_SCHEMA({"code": "1234", "warning": {"confirm": bad}})

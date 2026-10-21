@@ -6,6 +6,8 @@
 //     steps: the current code, the new one, the new one again.
 //   - Warning: how many warnings before a trigger, and the quiet minutes that
 //     start the count over, with where the count stands right now.
+//     Also the gate in front of a warning (alarm_rules.py, `confirm`): how many
+//     detections make one, and how long a sensor has to stay on to count.
 //   - What fires: which outputs a warning and a trigger switch on, and for how
 //     long. A play button runs each one so it can be heard and seen.
 //   - Zones and sensors: what each zone — and, when it needs its own rule, each
@@ -58,6 +60,13 @@
       warnings_before: 'Warnings before trigger',
       counter_resets: 'Counter resets after',
       without_detections: 'min without detections',
+      confirm_count: 'Detections per warning',
+      confirm_window: 'within',
+      confirm_window_unit: 'sec',
+      confirm_min: 'Counts once the sensor stays on',
+      confirm_min_unit: 'sec (0: right away)',
+      confirm_recount: 'Counts again every',
+      confirm_recount_unit: 'sec while on (0: never)',
       now: 'Now {n} of {limit}',
       resets_in: 'resets in {minutes} min',
       what_fires: 'What fires',
@@ -133,6 +142,13 @@
       warnings_before: 'Avisos antes del disparo',
       counter_resets: 'El contador se reinicia a los',
       without_detections: 'min sin detecciones',
+      confirm_count: 'Detecciones por aviso',
+      confirm_window: 'en',
+      confirm_window_unit: 'seg',
+      confirm_min: 'Cuenta si el sensor sigue prendido',
+      confirm_min_unit: 'seg (0: al instante)',
+      confirm_recount: 'Vuelve a contar cada',
+      confirm_recount_unit: 'seg prendido (0: nunca)',
       now: 'Ahora {n} de {limit}',
       resets_in: 'se reinicia en {minutes} min',
       what_fires: 'Qué se activa',
@@ -456,6 +472,7 @@
 
     _warningHtml(config, t) {
       const w = config.warning
+      const c = w.confirm || { count: 1, window_seconds: 60, min_seconds: 0, recount_seconds: 0 }
       const resets = this._resetsText()
       return `
         <div class="sec" data-heading="${escapeHtml(t.warning)}">${escapeHtml(t.warning)}</div>
@@ -466,6 +483,21 @@
           <label class="field"><span>${escapeHtml(t.counter_resets)}</span>
             <input type="number" min="1" max="1440" data-warning="window_minutes" value="${w.window_minutes}">
             <span class="muted">${escapeHtml(t.without_detections)}</span></label>
+        </div>
+        <div class="confirm">
+        <div class="limits stack">
+          <label class="field"><span>${escapeHtml(t.confirm_count)}</span>
+            <input type="number" min="1" max="20" data-warning="confirm_count" value="${c.count}">
+            <span class="muted">${escapeHtml(t.confirm_window)}</span>
+            <input type="number" min="1" max="3600" data-warning="confirm_window_seconds" value="${c.window_seconds}">
+            <span class="muted">${escapeHtml(t.confirm_window_unit)}</span></label>
+          <label class="field"><span>${escapeHtml(t.confirm_min)}</span>
+            <input type="number" min="0" max="3600" data-warning="confirm_min_seconds" value="${c.min_seconds}">
+            <span class="muted">${escapeHtml(t.confirm_min_unit)}</span></label>
+          <label class="field"><span>${escapeHtml(t.confirm_recount)}</span>
+            <input type="number" min="0" max="3600" data-warning="confirm_recount_seconds" value="${c.recount_seconds}">
+            <span class="muted">${escapeHtml(t.confirm_recount_unit)}</span></label>
+        </div>
         </div>
         <div class="now">${escapeHtml(fill(t.now, { n: w.count, limit: w.limit }))}<span data-resets="1">${resets ? ` · ${escapeHtml(resets)}` : ''}</span></div>
         </div>`
@@ -714,6 +746,8 @@
           /* Plain text: this block was in the warning colour. */
           .annika-alarm .limits { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; margin-bottom: 0; color: var(--primary-text-color); }
           .annika-alarm .field { display: inline-flex; align-items: center; gap: 8px; }
+          .annika-alarm .confirm { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--divider-color); }
+          .annika-alarm .limits.stack { flex-direction: column; align-items: flex-start; gap: 8px; }
           .annika-alarm .now { color: var(--primary-color); font-size: 13px; font-style: italic; margin: 10px 0 2px; }
           .annika-alarm table { width: 100%; border-collapse: collapse; }
           .annika-alarm th { text-align: left; font-weight: 400; font-size: 13px; color: var(--secondary-text-color); padding: 10px 8px; }
