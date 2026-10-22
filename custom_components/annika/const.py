@@ -18,6 +18,7 @@ CONF_POOL_FILTER = "pool_filter"
 CONF_ALARM = "alarm"
 CONF_CAMERAS = "cameras"
 CONF_DOORBELLS = "doorbell"
+CONF_LOCKS = "locks"
 
 # What a platform was loaded for: several features share the switch and sensor
 # platforms, and each discovery call says which one it is setting up.
@@ -27,3 +28,4 @@ KIND_POOL_FILTER = "pool_filter"
 KIND_ALARM = "alarm"
 KIND_CAMERAS = "cameras"
 KIND_DOORBELLS = "doorbells"
+KIND_LOCKS = "locks"

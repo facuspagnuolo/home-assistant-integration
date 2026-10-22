@@ -288,3 +288,61 @@ test_doorbell_notification:
       domain: sensor
   fields:
     target: {name: Recipients, required: true, selector: {select: {options: [devices, users]}}}
+add_lock_code:
+  name: Add a lock code
+  description: Program a code, and its emergency code (the same with the last digit as 0), in the locks.
+  target:
+    entity:
+      integration: annika
+      domain: sensor
+  fields:
+    name: {name: Name, required: true, selector: {text: null}}
+    type: {name: Type, selector: {select: {options: [fixed, temporary]}}}
+    code: {name: Code, description: 4 to 8 digits, not ending in 0. One is made when it is empty., selector: {text: null}}
+    locks: {name: Locks, description: All of them when empty., selector: {entity: {multiple: true, domain: lock}}}
+    hours: {name: Valid for (hours), description: Temporary codes, selector: {number: {min: 1, max: 720}}}
+    until: {name: Valid until, description: Temporary codes, selector: {datetime: null}}
+delete_lock_code:
+  name: Delete a lock code
+  description: Remove a code and its emergency code from the locks.
+  target:
+    entity:
+      integration: annika
+      domain: sensor
+  fields:
+    id: {name: Code, required: true, selector: {text: null}}
+import_lock_codes:
+  name: Import the codes of the locks
+  description: Adopt the codes the locks already hold in Annika's slots, named after their slot, and give each its emergency code.
+  target:
+    entity:
+      integration: annika
+      domain: sensor
+rename_lock_code:
+  name: Rename a lock code
+  description: Change the name of a code.
+  target:
+    entity:
+      integration: annika
+      domain: sensor
+  fields:
+    id: {name: Code, required: true, selector: {text: null}}
+    name: {name: Name, required: true, selector: {text: null}}
+set_lock_rule:
+  name: Set the disarm rule
+  description: Disarm the alarm when a door is unlocked, while it is armed in one of these modes.
+  target:
+    entity:
+      integration: annika
+      domain: sensor
+  fields:
+    enabled: {name: Enabled, selector: {boolean: null}}
+    locks: {name: Locks, description: Every lock when empty., selector: {entity: {multiple: true, domain: lock}}}
+    modes: {name: Modes, description: Any mode when empty., selector: {select: {multiple: true, options: [away, night, vacation]}}}
+test_lock_rule:
+  name: Test the disarm rule
+  description: Put a test line in the activity, without disarming the alarm or moving a lock.
+  target:
+    entity:
+      integration: annika
+      domain: sensor

@@ -53,6 +53,33 @@
     },
     "unknown_target": {
       "message": "Unknown zone, sensor or output"
+    },
+    "invalid_lock_code": {
+      "message": "A code is 4 to 8 digits"
+    },
+    "emergency_ending": {
+      "message": "A code cannot end in 0: that ending is the emergency alert"
+    },
+    "code_taken": {
+      "message": "That code is too close to another one"
+    },
+    "no_free_slot": {
+      "message": "Every code slot is taken"
+    },
+    "unknown_lock": {
+      "message": "Unknown lock {lock}"
+    },
+    "unknown_code": {
+      "message": "Unknown code"
+    },
+    "name_required": {
+      "message": "The code needs a name"
+    },
+    "unknown_type": {
+      "message": "A code is fixed or temporary"
+    },
+    "invalid_expiry": {
+      "message": "A temporary code needs a time in the future, within 30 days"
     }
   }
 }

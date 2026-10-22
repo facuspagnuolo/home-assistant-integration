@@ -53,6 +53,33 @@
     },
     "unknown_target": {
       "message": "Zona, sensor o salida desconocida"
+    },
+    "invalid_lock_code": {
+      "message": "Un código tiene de 4 a 8 dígitos"
+    },
+    "emergency_ending": {
+      "message": "Un código no puede terminar en 0: ese final es la alerta de emergencia"
+    },
+    "code_taken": {
+      "message": "Ese código es muy parecido a otro"
+    },
+    "no_free_slot": {
+      "message": "Todos los slots de códigos están ocupados"
+    },
+    "unknown_lock": {
+      "message": "Cerradura desconocida {lock}"
+    },
+    "unknown_code": {
+      "message": "Código desconocido"
+    },
+    "name_required": {
+      "message": "El código necesita un nombre"
+    },
+    "unknown_type": {
+      "message": "Un código es fijo o temporal"
+    },
+    "invalid_expiry": {
+      "message": "Un código temporal necesita una hora futura, dentro de 30 días"
     }
   }
 }
