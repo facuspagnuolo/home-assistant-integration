@@ -248,3 +248,43 @@ delete_clip:
       domain: sensor
   fields:
     clip_id: {name: Clip, required: true, selector: {text: null}}
+set_doorbell_notification:
+  name: Set who a ring is told to
+  description: Whether the doorbell's tablets (devices) or the Annika app's people (users) are told when someone rings, when somebody is home and when nobody is.
+  target:
+    entity:
+      integration: annika
+      domain: sensor
+  fields:
+    target: {name: Recipients, required: true, selector: {select: {options: [devices, users]}}}
+    home: {name: When somebody is home, selector: {boolean: null}}
+    away: {name: When nobody is home, selector: {boolean: null}}
+set_doorbell_presence:
+  name: Set who counts as home
+  description: Nobody is home when none of these people is.
+  target:
+    entity:
+      integration: annika
+      domain: sensor
+  fields:
+    people: {name: People, required: true, selector: {entity: {multiple: true, domain: person}}}
+set_doorbell_talk:
+  name: Set how talking works
+  description: Whether the speaker is muted while talking and whether the microphone turns itself off.
+  target:
+    entity:
+      integration: annika
+      domain: sensor
+  fields:
+    mute_speaker: {name: Mute the speaker while talking, selector: {boolean: null}}
+    auto_off: {name: Turn the microphone off by itself, selector: {boolean: null}}
+    auto_off_seconds: {name: Seconds before it turns off, selector: {number: {min: 10, max: 600}}}
+test_doorbell_notification:
+  name: Test the doorbell notification
+  description: Send what a ring sends to the devices or to the users, now.
+  target:
+    entity:
+      integration: annika
+      domain: sensor
+  fields:
+    target: {name: Recipients, required: true, selector: {select: {options: [devices, users]}}}

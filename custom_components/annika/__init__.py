@@ -25,9 +25,11 @@ from .alarm import DATA_ALARM, AnnikaAlarmSensors
 from .alarm_panel import ALARM_SCHEMA, DATA_ALARM_PANEL, AnnikaAlarmPanel
 from .cameras import CAMERAS_SCHEMA, DATA_CAMERAS, AnnikaCameras
 from .alarm_rules import AnnikaAlarmRules
+from .doorbells import DATA_DOORBELLS, DOORBELLS_SCHEMA, AnnikaDoorbells
 from .const import (
     CONF_ALARM,
     CONF_CAMERAS,
+    CONF_DOORBELLS,
     CONF_ALARM_SENSORS,
     CONF_API_URL,
     CONF_DEVICES,
@@ -42,6 +44,7 @@ from .const import (
     DOMAIN,
     KIND_ALARM,
     KIND_CAMERAS,
+    KIND_DOORBELLS,
     KIND_IRRIGATION,
     KIND_POOL_FILTER,
 )
@@ -65,6 +68,7 @@ JS_RESOURCES = (
     ("annika-ac-card.js", "/annika_static/annika-ac-card.js"),
     ("annika-heating-card.js", "/annika_static/annika-heating-card.js"),
     ("annika-cameras-card.js", "/annika_static/annika-cameras-card.js"),
+    ("annika-doorbell-card.js", "/annika_static/annika-doorbell-card.js"),
     ("annika-remote-card.js", "/annika_static/annika-remote-card.js"),
     ("annika-alarm-card.js", "/annika_static/annika-alarm-card.js"),
     ("annika-activity-card.js", "/annika_static/annika-activity-card.js"),
@@ -94,6 +98,7 @@ CONFIG_SCHEMA = vol.Schema(
                 # blocks must not stop the rest of the integration from loading.
                 vol.Optional(CONF_ALARM): dict,
                 vol.Optional(CONF_CAMERAS): dict,
+                vol.Optional(CONF_DOORBELLS): dict,
                 # Physical sensors Annika wraps with an alarm participation
                 # switch. Devices can be named or given by registry id; every
                 # binary_sensor they own is picked up. See alarm.py.
@@ -336,6 +341,26 @@ async def async_setup_cameras(hass: HomeAssistant, config: ConfigType) -> None:
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, cameras.async_stop)
 
 
+async def async_setup_doorbells(hass: HomeAssistant, config: ConfigType) -> None:
+    """Create Annika's doorbells, if this unit configures any."""
+
+    doorbells_config = config[DOMAIN].get(CONF_DOORBELLS)
+    if not doorbells_config:
+        return
+    try:
+        doorbells_config = DOORBELLS_SCHEMA(doorbells_config)
+    except vol.Invalid as error:
+        _LOGGER.error("Annika doorbells not started, invalid configuration: %s", error)
+        return
+
+    doorbells = AnnikaDoorbells(hass, doorbells_config)
+    hass.data[DATA_DOORBELLS] = doorbells
+    hass.async_create_task(
+        async_load_platform(hass, "sensor", DOMAIN, {DISCOVERY_KIND: KIND_DOORBELLS}, config)
+    )
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, doorbells.async_stop)
+
+
 async def async_setup_actor_sensor(hass: HomeAssistant, config: ConfigType) -> None:
     """Wire up actor attribution and the sensor that surfaces it.
 
@@ -447,6 +472,7 @@ async def async_setup(
     await async_setup_pool_filter(hass, config)
     await async_setup_alarm_panel(hass, config)
     await async_setup_cameras(hass, config)
+    await async_setup_doorbells(hass, config)
 
     heartbeat_reporter = HeartbeatReporter(hass)
     await heartbeat_reporter.async_start()
