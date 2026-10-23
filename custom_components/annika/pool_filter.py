@@ -8,7 +8,8 @@ their runs are to begin with:
     annika:
       pool_filter:
         switch: switch.pool_filter
-        notify_view: pool            # optional: Annika events on and off
+        notify_view: pool            # optional: Annika events on and off; the
+                                     # card's Notify tile turns them on or off
         seasons:
           - name: Summer
             months: [12, 1, 2]
@@ -133,6 +134,7 @@ class PoolFilterSettings:
     """What the person edits. `None` until the owning entity restored it."""
 
     enabled: bool | None = None
+    notify: bool | None = None
     run_enabled: dict[tuple[str, int], bool | None] = field(default_factory=dict)
     run_time: dict[tuple[str, int], time | None] = field(default_factory=dict)
     minutes: dict[str, float | None] = field(default_factory=dict)
@@ -446,7 +448,7 @@ class AnnikaPoolFilter:
         )
 
     async def _send_event(self, key: str, **values) -> None:
-        if not self.notify_view:
+        if not self.notify_view or self.settings.notify is False:
             return
         try:
             await AnnikaEventClient(self.hass).async_send(
@@ -470,6 +472,10 @@ def unique_status(pool_filter: AnnikaPoolFilter) -> str:
 
 def unique_enabled(pool_filter: AnnikaPoolFilter) -> str:
     return f"annika_pool_filter_enabled"
+
+
+def unique_notify(pool_filter: AnnikaPoolFilter) -> str:
+    return f"annika_pool_filter_notify"
 
 
 def unique_run(pool_filter: AnnikaPoolFilter) -> str:

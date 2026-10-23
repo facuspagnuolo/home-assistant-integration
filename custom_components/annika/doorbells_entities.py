@@ -21,6 +21,8 @@ from .doorbells import DATA_DOORBELLS, TARGETS, AnnikaDoorbells
 SERVICE_SET_DOORBELL_NOTIFICATION = "set_doorbell_notification"
 SERVICE_SET_DOORBELL_PRESENCE = "set_doorbell_presence"
 SERVICE_SET_DOORBELL_TALK = "set_doorbell_talk"
+SERVICE_SET_DOORBELL_RECORDING = "set_doorbell_recording"
+SERVICE_DELETE_DOORBELL_CLIP = "delete_doorbell_clip"
 SERVICE_TEST_DOORBELL_NOTIFICATION = "test_doorbell_notification"
 
 
@@ -56,6 +58,18 @@ async def async_setup_platform(
         "async_set_doorbell_talk",
     )
     platform.async_register_entity_service(
+        SERVICE_SET_DOORBELL_RECORDING,
+        {
+            vol.Optional("home"): cv.boolean,
+            vol.Optional("away"): cv.boolean,
+            vol.Optional("keep_days"): vol.All(vol.Coerce(int), vol.Range(min=1, max=365)),
+        },
+        "async_set_doorbell_recording",
+    )
+    platform.async_register_entity_service(
+        SERVICE_DELETE_DOORBELL_CLIP, {vol.Required("clip_id"): cv.string}, "async_delete_doorbell_clip"
+    )
+    platform.async_register_entity_service(
         SERVICE_TEST_DOORBELL_NOTIFICATION,
         {vol.Required("target"): vol.In(TARGETS)},
         "async_test_doorbell_notification",
@@ -77,7 +91,7 @@ class AnnikaDoorbellsSensor(SensorEntity):
     _attr_has_entity_name = False
     _attr_icon = "mdi:doorbell"
     _attr_device_class = SensorDeviceClass.TIMESTAMP
-    _unrecorded_attributes = frozenset({"config"})
+    _unrecorded_attributes = frozenset({"config", "clips", "media_base", "image_base"})
 
     def __init__(self, doorbells: AnnikaDoorbells) -> None:
         self._doorbells = doorbells
@@ -112,6 +126,15 @@ class AnnikaDoorbellsSensor(SensorEntity):
 
     async def async_set_doorbell_talk(self, **values) -> None:
         self._doorbells.set_talk(**values)
+
+    async def async_set_doorbell_recording(self, **values) -> None:
+        self._doorbells.set_recording(**values)
+
+    async def async_delete_doorbell_clip(self, clip_id: str) -> None:
+        try:
+            await self._doorbells.async_delete_clip(clip_id)
+        except ValueError as error:
+            raise _unknown(clip_id) from error
 
     async def async_test_doorbell_notification(self, target: str) -> None:
         try:

@@ -26,11 +26,13 @@ from .alarm_panel import ALARM_SCHEMA, DATA_ALARM_PANEL, AnnikaAlarmPanel
 from .cameras import CAMERAS_SCHEMA, DATA_CAMERAS, AnnikaCameras
 from .alarm_rules import AnnikaAlarmRules
 from .doorbells import DATA_DOORBELLS, DOORBELLS_SCHEMA, AnnikaDoorbells
+from .heating import DATA_HEATING, HEATING_SCHEMA, AnnikaHeating
 from .locks import DATA_LOCKS, LOCKS_SCHEMA, AnnikaLocks
 from .const import (
     CONF_ALARM,
     CONF_CAMERAS,
     CONF_DOORBELLS,
+    CONF_HEATING,
     CONF_LOCKS,
     CONF_ALARM_SENSORS,
     CONF_API_URL,
@@ -48,6 +50,7 @@ from .const import (
     KIND_CAMERAS,
     KIND_DOORBELLS,
     KIND_IRRIGATION,
+    KIND_HEATING,
     KIND_LOCKS,
     KIND_POOL_FILTER,
 )
@@ -104,6 +107,7 @@ CONFIG_SCHEMA = vol.Schema(
                 vol.Optional(CONF_CAMERAS): dict,
                 vol.Optional(CONF_DOORBELLS): dict,
                 vol.Optional(CONF_LOCKS): dict,
+                vol.Optional(CONF_HEATING): dict,
                 # Physical sensors Annika wraps with an alarm participation
                 # switch. Devices can be named or given by registry id; every
                 # binary_sensor they own is picked up. See alarm.py.
@@ -387,6 +391,27 @@ async def async_setup_locks(hass: HomeAssistant, config: ConfigType) -> None:
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, locks.async_stop)
 
 
+async def async_setup_heating(hass: HomeAssistant, config: ConfigType) -> None:
+    """Create Annika's heating, if this unit configures any."""
+
+    heating_config = config[DOMAIN].get(CONF_HEATING)
+    if not heating_config:
+        return
+    try:
+        heating_config = HEATING_SCHEMA(heating_config)
+    except vol.Invalid as error:
+        _LOGGER.error("Annika heating not started, invalid configuration: %s", error)
+        return
+
+    heating = AnnikaHeating(hass, heating_config)
+    hass.data[DATA_HEATING] = heating
+    for platform in ("sensor", "switch"):
+        hass.async_create_task(
+            async_load_platform(hass, platform, DOMAIN, {DISCOVERY_KIND: KIND_HEATING}, config)
+        )
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, heating.async_stop)
+
+
 async def async_setup_actor_sensor(hass: HomeAssistant, config: ConfigType) -> None:
     """Wire up actor attribution and the sensor that surfaces it.
 
@@ -500,6 +525,7 @@ async def async_setup(
     await async_setup_cameras(hass, config)
     await async_setup_doorbells(hass, config)
     await async_setup_locks(hass, config)
+    await async_setup_heating(hass, config)
 
     heartbeat_reporter = HeartbeatReporter(hass)
     await heartbeat_reporter.async_start()

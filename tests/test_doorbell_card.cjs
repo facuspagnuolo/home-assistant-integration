@@ -22,6 +22,7 @@ const config = {
     people: [{ entity: 'person.golf', name: 'Golf', home: false }, { entity: 'person.delfi', name: 'Delfi', home: false }],
   },
   talk: { mute_speaker: true, auto_off: true, auto_off_seconds: 60 },
+  recording: { home: false, away: true, before: 5, after: 20, keep_days: 14 },
   doorbells: [{ id: 'front', name: 'Front door', entity: 'camera.front', visitor: 'binary_sensor.v', sensors: { person: 'binary_sensor.p' } }],
 }
 
@@ -144,4 +145,42 @@ test('settings tiles: select, number, restart button', () => {
   assert.ok(tile('select.a').includes('select-options'))
   assert.ok(tile('number.b').includes('numeric-input'))
   assert.ok(tile('button.c').includes('confirmation'))
+})
+
+test('recording panel: record at home / away and how many days to keep', () => {
+  const el = card()
+  const html = el._recordingHtml(config, el._texts)
+  assert.ok(html.includes('data-rec-when="home"') && html.includes('data-rec-when="away"'))
+  assert.equal((html.match(/data-rec-when="away"[^>]*checked/g) || []).length, 1)
+  assert.equal((html.match(/data-rec-when="home"[^>]*checked/g) || []).length, 0)
+  assert.ok(html.includes('data-rec-days') && html.includes('value="14"'))
+})
+
+test('clips: a carousel of thumbnails, with the picture signed when it is under /media', () => {
+  const el = card()
+  const t = el._texts
+  const clips = [
+    { id: 'a1', time: new Date().toISOString(), doorbell: 'Main Doorbell', video: 'a.mp4', image: 'a.jpg', notified: true },
+    { id: 'b2', time: new Date().toISOString(), doorbell: 'Main Doorbell', video: 'b.mp4', image: null, notified: false },
+  ]
+  const html = el._clipsHtml({ clips, image_base: '/media/local/snapshots' }, t)
+  assert.deepEqual([...html.matchAll(/data-clip="(\w+)"/g)].map((m) => m[1]), ['a1', 'b2'])
+  assert.ok(html.includes('data-signed="/media/local/snapshots/a.jpg"'))
+  assert.equal((html.match(/class="bell"/g) || []).length, 1)
+  assert.ok(el._clipsHtml({ clips, image_base: '/local/snaps' }, t).includes('src="/local/snaps/a.jpg"'))
+  assert.ok(el._clipsHtml({ clips: [] }, t).includes('No clips yet'))
+})
+
+test('the player asks for the clip from the media source and says when it cannot', async () => {
+  const el = card()
+  el._syncPlayer = () => {}
+  const clip = { id: 'a1', doorbell: 'Main Doorbell', video: 'a.mp4' }
+  const asked = []
+  el._hass.callWS = async (message) => { asked.push(message.media_content_id); return { url: '/media/x?token=1' } }
+  await el._play(clip, { media_base: 'media-source://media_source/local/clips' })
+  assert.deepEqual(asked, ['media-source://media_source/local/clips/a.mp4'])
+  assert.equal(el._playing.url, '/media/x?token=1')
+  await el._play(clip, {})
+  assert.equal(el._playing.error, true)
+  assert.ok(el._playerHtml(el._texts).includes('data-delete="a1"'))
 })

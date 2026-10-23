@@ -13,6 +13,10 @@
 // told, and what counts as nobody being home, are the same for every doorbell
 // and sit beside the tiles (below them on a phone).
 //
+// Below the tiles are the clips of the rings that were recorded (see doorbells.py):
+// one is kept when someone rings and nobody is home (what is recorded when is set in
+// the Recording panel), and they are deleted by themselves after the days it says.
+//
 // Talking: the live view is not Home Assistant's picture card but a WebRTC
 // connection of its own, through Home Assistant's `camera/webrtc/offer` (the
 // same one its own card uses), that also offers the doorbell an audio track to
@@ -77,6 +81,19 @@
       no_settings: 'This doorbell has no settings to show',
       confirm_restart: 'Restart this device?',
       confirm_siren: 'Turn the siren on?',
+      recording: 'Recording',
+      record_when: 'Record a clip when someone rings',
+      keep_days: 'Keep clips for',
+      days: 'days',
+      clips: 'Clips',
+      no_clips: 'No clips yet',
+      ring: 'Ring',
+      notified: 'Notified',
+      just_now: 'just now',
+      delete: 'Delete',
+      close: 'Close',
+      loading: 'Loading…',
+      cannot_play: 'This clip cannot be played',
     },
     es: {
       missing: 'No se encontró la entidad: {entity}',
@@ -123,6 +140,19 @@
       no_settings: 'Este timbre no tiene ajustes para mostrar',
       confirm_restart: '¿Reiniciar este dispositivo?',
       confirm_siren: '¿Encender la sirena?',
+      recording: 'Grabación',
+      record_when: 'Grabar un clip cuando suena el timbre',
+      keep_days: 'Guardar los clips',
+      days: 'días',
+      clips: 'Clips',
+      no_clips: 'Todavía no hay clips',
+      ring: 'Timbre',
+      notified: 'Avisado',
+      just_now: 'recién',
+      delete: 'Borrar',
+      close: 'Cerrar',
+      loading: 'Cargando…',
+      cannot_play: 'No se puede reproducir este clip',
     },
   }
 
@@ -358,6 +388,7 @@
       // The doorbell whose settings are open (replaces the card's content), or null.
       this._settings = null
       this._tiles = {}
+      this._playing = null
       this._render()
     }
 
@@ -374,6 +405,10 @@
     disconnectedCallback() {
       if (typeof document !== 'undefined' && this._onHidden) document.removeEventListener('visibilitychange', this._onHidden)
       this._allMicsOff()
+      if (this._playing) {
+        this._playing = null
+        this._syncPlayer()
+      }
       Object.values(this._players || {}).forEach((player) => player.close())
       this._players = {}
     }
@@ -783,6 +818,153 @@
       return doorbell ? this._deviceEntities(doorbell).join(',') : ''
     }
 
+    _recordingHtml(config, t) {
+      const recording = config.recording
+      const check = (when) =>
+        `<label class="field"><input type="checkbox" class="annika-check" data-rec-when="${when}"${recording[when] ? ' checked' : ''}><span>${escapeHtml(t[when === 'home' ? 'at_home' : 'away'])}</span></label>`
+      return `<div class="wide"><div class="sec" data-heading="${escapeHtml(t.recording)}">${escapeHtml(t.recording)}</div>
+        <ha-card class="panel"><div class="stack">
+          <div class="presence"><span>${escapeHtml(t.record_when)}</span>${check('home')}${check('away')}</div>
+          <label class="field"><span>${escapeHtml(t.keep_days)}</span>
+            <input type="number" data-rec-days min="1" max="365" value="${escapeHtml(recording.keep_days)}"><span class="muted">${escapeHtml(t.days)}</span></label>
+        </div></ha-card></div>`
+    }
+
+    // --- clips ----------------------------------------------------------------
+
+    _ago(iso) {
+      const seconds = Math.round((new Date(iso) - Date.now()) / 1000)
+      if (Math.abs(seconds) < 60) return this._texts.just_now
+      const lang = String((window.Annika && window.Annika.language(this._hass, this._config)) || (this._hass && this._hass.language) || 'en')
+      const format = new Intl.RelativeTimeFormat(lang, { numeric: 'auto' })
+      for (const [unit, size] of [['day', 86400], ['hour', 3600], ['minute', 60]]) {
+        if (Math.abs(seconds) >= size) return format.format(Math.round(seconds / size), unit)
+      }
+      return ''
+    }
+
+    _clipsHtml(attrs, t) {
+      const clips = attrs.clips || []
+      const body = clips.length
+        ? clips.map((clip) => {
+            let picture = ''
+            if (clip.image && attrs.image_base) {
+              const path = `${attrs.image_base}/${clip.image}`
+              // /local is public; /media/local needs a signed URL, filled in after the render.
+              picture = path.startsWith('/media/')
+                ? `<img data-signed="${escapeHtml(path)}" alt="" loading="lazy">`
+                : `<img src="${escapeHtml(path)}" alt="" loading="lazy">`
+            }
+            const bell = clip.notified ? `<span class="bell" title="${escapeHtml(t.notified)}">${this._icon('mdi:bell')}</span>` : ''
+            return `<button class="clip" data-clip="${escapeHtml(clip.id)}">
+              <span class="thumb">${picture}<span class="play-over">${this._icon('mdi:play')}</span>${bell}</span>
+              <span class="meta"><span class="what">${this._icon(ICONS.visitor)}${escapeHtml(clip.doorbell)}</span>
+              <span class="muted">${escapeHtml(t.ring)} · ${escapeHtml(this._ago(clip.time))}</span></span>
+            </button>`
+          }).join('')
+        : `<div class="muted empty">${escapeHtml(t.no_clips)}</div>`
+      return `<div class="wide clips"><div class="sec" data-heading="${escapeHtml(t.clips)}">${escapeHtml(t.clips)}</div><div class="carousel">${body}</div></div>`
+    }
+
+    // The player is a modal <dialog> (as in the cameras card): drawn in the browser's top
+    // layer, so it fills the screen whatever the page puts around the card, and outside the
+    // card's content so drawing the card again does not restart the video.
+    _playerHtml(t) {
+      const playing = this._playing
+      const media = playing.url
+        ? `<video src="${escapeHtml(playing.url)}" controls autoplay playsinline></video>`
+        : `<div class="status">${escapeHtml(playing.error ? t.cannot_play : t.loading)}</div>`
+      return `<div class="top"><span class="title">${escapeHtml(playing.clip.doorbell)} · ${escapeHtml(t.ring)}</span>
+        <span><button class="link danger" data-delete="${escapeHtml(playing.clip.id)}">${escapeHtml(t.delete)}</button>
+        <button class="link" data-close>${escapeHtml(t.close)}</button></span></div>${media}`
+    }
+
+    _syncPlayer() {
+      const playing = this._playing
+      let dialog = this._dialog
+      if (!playing) {
+        this._playerKey = null
+        if (dialog) {
+          if (dialog.open) dialog.close()
+          dialog.replaceChildren()
+        }
+        return
+      }
+      if (!dialog) {
+        dialog = document.createElement('dialog')
+        dialog.className = 'annika-player'
+        // Escape closes a modal dialog by itself: forget the clip too.
+        dialog.addEventListener('close', () => {
+          if (this._playing) {
+            this._playing = null
+            this._syncPlayer()
+          }
+        })
+        dialog.addEventListener('click', (event) => {
+          const button = event.target.closest && event.target.closest('[data-close],[data-delete]')
+          if (!button) return
+          const id = button.dataset.delete
+          this._playing = null
+          this._syncPlayer()
+          if (id) this._service('delete_doorbell_clip', { clip_id: id })
+        })
+        this._dialog = dialog
+        this.appendChild(dialog)
+      }
+      const key = JSON.stringify([playing.clip.id, playing.url, playing.error, this._texts.close])
+      if (key !== this._playerKey) {
+        this._playerKey = key
+        dialog.innerHTML = this._playerHtml(this._texts)
+      }
+      if (!dialog.open) dialog.showModal()
+    }
+
+    async _play(clip, attrs) {
+      this._playing = { clip, url: null, error: false }
+      this._syncPlayer()
+      try {
+        if (!attrs.media_base) throw new Error('no media folder')
+        const result = await this._hass.callWS({
+          type: 'media_source/resolve_media',
+          media_content_id: `${attrs.media_base}/${clip.video}`,
+          expires: 3600,
+        })
+        const url = this._hass.hassUrl ? this._hass.hassUrl(result.url) : result.url
+        if (this._playing && this._playing.clip.id === clip.id) this._playing = { clip, url, error: false }
+      } catch (err) {
+        if (this._playing && this._playing.clip.id === clip.id) this._playing = { clip, url: null, error: true }
+      }
+      this._syncPlayer()
+    }
+
+    // Pictures under /media are behind Home Assistant's login: ask for a signed
+    // link per picture, once, and keep it for most of its hour.
+    _signImages() {
+      const cache = (this._signed ||= new Map())
+      for (const img of this.querySelectorAll('img[data-signed]')) {
+        const path = img.dataset.signed
+        const hit = cache.get(path)
+        if (hit && hit.failed && hit.until > Date.now()) continue
+        if (hit && hit.url && hit.until > Date.now()) {
+          img.src = hit.url
+          continue
+        }
+        if (hit && hit.pending) {
+          hit.pending.then(() => this._signImages())
+          continue
+        }
+        const pending = this._hass
+          .callWS({ type: 'auth/sign_path', path, expires: 3600 })
+          .then((result) => {
+            const url = this._hass.hassUrl ? this._hass.hassUrl(result.path) : result.path
+            cache.set(path, { url, until: Date.now() + 50 * 60 * 1000 })
+          })
+          .catch(() => cache.set(path, { failed: true, until: Date.now() + 60 * 1000 }))
+        cache.set(path, { pending, until: 0 })
+        pending.then(() => this._signImages())
+      }
+    }
+
     // --- rendering ----------------------------------------------------------
 
     _render(force) {
@@ -794,14 +976,16 @@
         this._structure = ''
         return
       }
-      const config = stateObj.attributes.config
+      const attrs = stateObj.attributes
+      const config = attrs.config
       if (!config) return
       // A doorbell that is no longer in the configuration has no settings to show.
       if (this._settings && !config.doorbells.some((doorbell) => doorbell.id === this._settings)) this._settings = null
       // Who is home is updated in place (see _updateNow); who is on the list is part of the structure.
       const presence = config.presence.people.map((person) => [person.entity, person.name])
       const key = JSON.stringify([
-        config.doorbells, config.notifications, config.notification, config.talk, presence,
+        config.doorbells, config.notifications, config.notification, config.talk, config.recording, presence,
+        attrs.clips, attrs.image_base, attrs.media_base, t.clips,
         this._candidates(presence.map(([entity]) => entity)), t.doorbells, t.talk,
         this._settings, this._settings && this._deviceKey(config),
       ])
@@ -884,6 +1068,30 @@
           .annika-doorbell .pill:hover { border-color: rgba(255, 255, 255, .2); }
           .annika-doorbell .pill.back { --mdc-icon-size: 18px; padding: 2px 10px 2px 8px; font-size: 12px; gap: 4px; }
 
+          /* The cameras card's clips: a carousel of thumbnails, played in a full-screen dialog. */
+          .annika-doorbell .carousel { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 8px; scroll-snap-type: x proximity; }
+          .annika-doorbell .clip { flex: none; width: 220px; background: var(--ha-card-background, var(--card-background-color)); border: 0; border-radius: var(--ha-card-border-radius, 0); padding: 0;
+            text-align: left; cursor: pointer; color: inherit; font: inherit; overflow: hidden; scroll-snap-align: start; }
+          .annika-doorbell .thumb { position: relative; display: block; aspect-ratio: 16 / 9; background: #000; }
+          .annika-doorbell .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+          .annika-doorbell .thumb .play-over { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; --mdc-icon-size: 36px;
+            background: linear-gradient(transparent 55%, rgba(0,0,0,.45)); }
+          .annika-doorbell .thumb .bell { position: absolute; top: 6px; right: 6px; --mdc-icon-size: 16px; color: var(--warning-color, #f5b335);
+            background: rgba(0,0,0,.55); border-radius: 999px; padding: 3px; display: inline-flex; }
+          .annika-doorbell .meta { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px 10px; }
+          .annika-doorbell .what { display: flex; align-items: center; gap: 6px; font-size: 14px; --mdc-icon-size: 16px; }
+          .annika-doorbell .empty { padding: 12px 0; }
+          dialog.annika-player { position: fixed; inset: 0; margin: 0; padding: 0; border: 0; width: 100vw; height: 100vh; height: 100dvh; max-width: none; max-height: none;
+            background: #000; color: #fff; overflow: hidden; box-sizing: border-box; }
+          dialog.annika-player[open] { display: flex; flex-direction: column; }
+          dialog.annika-player::backdrop { background: #000; }
+          .annika-player .top { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 15px;
+            padding: max(8px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 8px max(12px, env(safe-area-inset-left)); background: rgba(255,255,255,.08); }
+          .annika-player video { flex: 1 1 auto; min-height: 0; width: 100%; display: block; background: #000; object-fit: contain; padding-bottom: env(safe-area-inset-bottom); box-sizing: border-box; }
+          .annika-player .status { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,.7); }
+          .annika-player .link { background: none; border: 0; color: #fff; font: inherit; font-size: 15px; cursor: pointer; padding: 6px 10px; }
+          .annika-player .link.danger { color: var(--error-color, #ff6b5e); }
+
           .annika-doorbell .settings-head { display: flex; align-items: center; gap: 12px; }
           .annika-doorbell .settings-head .sec { padding-top: 0; flex: 1; min-width: 0; }
           /* The cameras card's tile row: six columns, the live view takes two and the tiles flow beside it. */
@@ -909,19 +1117,21 @@
             .annika-doorbell td.device .sub { display: none; }
             .annika-doorbell .play { width: 32px; height: 32px; }
             .annika-doorbell .presence > span:first-child { flex-basis: 100%; margin-right: 0; }
+            .annika-doorbell .clip { width: 180px; }
           }
         </style>
         <div class="annika-doorbell">
           ${this._settings
             ? this._settingsHtml(config, t)
-            : `<div class="layout"><div class="doorbells">${this._doorbellsHtml(config, t)}</div><div class="general">${this._notificationsHtml(config, t)}${this._talkHtml(config, t)}</div></div>`}
+            : `<div class="layout"><div class="doorbells">${this._doorbellsHtml(config, t)}</div><div class="general">${this._notificationsHtml(config, t)}${this._recordingHtml(config, t)}${this._talkHtml(config, t)}</div></div>${this._clipsHtml(attrs, t)}`}
         </div>
       `
-      this._bind(config)
+      this._bind(config, attrs)
       if (this._settings) this._mountSettings(config)
       this._mountLive(this._settings ? { doorbells: config.doorbells.filter((d) => d.id === this._settings) } : config)
       config.doorbells.forEach((doorbell) => this._syncTalk(doorbell.id))
       this._updateSensors()
+      this._signImages()
       this._headings().then(() => requestAnimationFrame(() => { this.style.minHeight = '' }))
     }
 
@@ -995,7 +1205,7 @@
 
     // --- events ---------------------------------------------------------------
 
-    _bind(config) {
+    _bind(config, attrs) {
       const on = (selector, event, handler) =>
         this.querySelectorAll(selector).forEach((el) => el.addEventListener(event, (e) => handler(el, e)))
       const people = () => config.presence.people.map((person) => person.entity)
@@ -1011,6 +1221,15 @@
         this._service('set_doorbell_presence', { people: people().filter((entity) => entity !== el.dataset.personRemove) }))
       on('select[data-person-add]', 'change', (el) => {
         if (el.value) this._service('set_doorbell_presence', { people: [...people(), el.value] })
+      })
+
+      on('[data-rec-when]', 'change', (el) => this._service('set_doorbell_recording', { [el.dataset.recWhen]: el.checked }))
+      on('[data-rec-days]', 'change', (el) => {
+        if (el.value !== '') this._service('set_doorbell_recording', { keep_days: Number(el.value) })
+      })
+      on('[data-clip]', 'click', (el) => {
+        const clip = (attrs.clips || []).find((c) => c.id === el.dataset.clip)
+        if (clip) this._play(clip, attrs)
       })
 
       on('[data-talk]', 'change', (el) => this._service('set_doorbell_talk', { [el.dataset.talk]: el.checked }))

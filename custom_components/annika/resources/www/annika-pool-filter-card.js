@@ -9,7 +9,8 @@
 // integration's YAML, restart, and the card follows.
 //
 //   Top row, small tiles: the timetable's on/off, the switch itself (to turn
-//   it on or off by hand), run now and stop; four in a row, two by two on a
+//   it on or off by hand), run now, stop and, with `notify_view`, whether
+//   runs send a notification; four in a row, two by two on a
 //   phone; under them, what comes next
 //   Then, full width:
 //     Timetable: one row per season, a checkbox and a time for each run, and
@@ -68,6 +69,7 @@
         tile_schedule: 'Schedule',
         tile_run: 'Run now',
         tile_stop: 'Stop',
+        tile_notify: 'Notifications',
         automation: 'Run by',
         on: 'on',
         off: 'off',
@@ -89,6 +91,7 @@
         tile_schedule: 'Programa',
         tile_run: 'Ejecutar ahora',
         tile_stop: 'Detener',
+        tile_notify: 'Notificaciones',
         automation: 'Lo maneja',
         on: 'prendida',
         off: 'apagada',
@@ -229,20 +232,26 @@
       // One row of tiles, small: the timetable's own toggle, the switch itself,
       // and the two actions. Tapping a toggle tile flips it.
       const press = (entity) => ({ hide_state: true, tap_action: pressAction(entity), icon_tap_action: pressAction(entity) })
-      const scheduleCards = [
-        headingConfig(headings.schedule),
-        gridConfig(
+      const scheduleCards = [headingConfig(headings.schedule)]
+      // The tiles are built again when a run starts or ends: Stop while the
+      // switch is running, Run now while it is not.
+      this._tileConfig = (running) => {
+        const columns = entities.notify ? TILE_COLUMNS : TILE_COLUMNS - 1
+        return gridConfig(
           [
             // With an automation of the house's own, the toggle is that automation.
             tile(entities.automation || entities.enabled, {}, entities.automation ? undefined : labels.tile_schedule),
             tile(entities.switch),
             // A button's state is when it was last pressed: nothing worth a line.
-            tile(entities.run, press(entities.run), labels.tile_run),
-            tile(entities.stop, press(entities.stop), labels.tile_stop),
+            running
+              ? tile(entities.stop, press(entities.stop), labels.tile_stop)
+              : tile(entities.run, press(entities.run), labels.tile_run),
+            // Only when the integration has `notify_view`: whether runs send an event.
+            ...(entities.notify ? [tile(entities.notify, {}, labels.tile_notify)] : []),
           ],
-          this._narrow ? NARROW_TILE_COLUMNS : TILE_COLUMNS,
-        ),
-      ]
+          this._narrow ? NARROW_TILE_COLUMNS : columns,
+        )
+      }
 
       const historyConfig = {
         type: 'vertical-stack',
@@ -265,16 +274,20 @@
         return element
       }
 
-      const column = (configs, extra) => {
+      const column = (configs, ...extras) => {
         const element = document.createElement('div')
         element.className = 'annika-pf-column'
         for (const config of configs) element.appendChild(build(config))
-        if (extra) element.appendChild(extra)
+        for (const extra of extras) element.appendChild(extra)
         return element
       }
 
       this._status = document.createElement('div')
       this._status.className = 'annika-pf-status'
+      this._tilesHost = document.createElement('div')
+      this._tilesRunning = this._isRunning()
+      this._tileCard = build(this._tileConfig(this._tilesRunning))
+      this._tilesHost.appendChild(this._tileCard)
 
       this.innerHTML = `
         <style>
@@ -312,7 +325,7 @@
       `
       const top = document.createElement('div')
       top.className = 'annika-pf-top'
-      top.appendChild(column(scheduleCards, this._status))
+      top.appendChild(column(scheduleCards, this._tilesHost, this._status))
       this.appendChild(top)
 
       const timetable = document.createElement('div')
@@ -415,10 +428,33 @@
       input.value = String(Math.round(Number(state.state)))
     }
 
+    _isRunning() {
+      const state = this._hass && this._hass.states[this._entity]
+      return !!state && state.state === 'running'
+    }
+
+    // Run now and Stop take the same place: only the one that makes sense shows.
+    _swapTiles() {
+      const running = this._isRunning()
+      if (!this._tilesHost || !this._tileConfig || running === this._tilesRunning) return
+      this._tilesRunning = running
+      this._tilesPending = (async () => {
+        const helpers = await window.loadCardHelpers()
+        const card = helpers.createCardElement(this._tileConfig(running))
+        card.hass = this._hass
+        if (running !== this._tilesRunning) return
+        const index = this._cards ? this._cards.indexOf(this._tileCard) : -1
+        if (index >= 0) this._cards[index] = card
+        this._tilesHost.replaceChildren(card)
+        this._tileCard = card
+      })()
+    }
+
     _update() {
       if (!this._hass || !this._tableCard) return
       const state = this._hass.states[this._entity]
       if (!state) return
+      this._swapTiles()
       const attributes = state.attributes
 
       for (const input of this._tableCard.querySelectorAll('input[data-entity]')) {

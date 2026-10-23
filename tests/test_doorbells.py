@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -39,7 +40,10 @@ def config(**overrides):
 
 @pytest.fixture
 def services(hass):
-    return SimpleNamespace(snapshot=async_mock_service(hass, "camera", "snapshot"))
+    return SimpleNamespace(
+        snapshot=async_mock_service(hass, "camera", "snapshot"),
+        record=async_mock_service(hass, "camera", "record"),
+    )
 
 
 @pytest.fixture
@@ -71,6 +75,8 @@ async def ring(hass, doorbells=None):
 
 def test_schema_defaults():
     values = config()
+    assert values["recording"] == {"home": False, "away": True, "before": 5, "after": 20, "keep_days": 14}
+    assert values["directory"] == "/media/clips"
     assert values["talk"] == {"mute_speaker": True, "auto_off": True, "auto_off_seconds": 60}
     assert values["notifications"] == {}
 
@@ -304,3 +310,173 @@ async def test_the_sensor_reports_the_config_and_the_services_edit_it(hass, serv
         await call("set_doorbell_presence", people=["light.kitchen"])
     with pytest.raises((HomeAssistantError, vol.Invalid)):
         await call("set_doorbell_talk", auto_off_seconds=5)
+
+
+# --- clips ------------------------------------------------------------------
+
+
+def folders(tmp_path):
+    return {"directory": str(tmp_path / "clips"), "snapshots": str(tmp_path / "snaps")}
+
+
+def touch(folder, name, age_days=0):
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, name)
+    open(path, "w").close()
+    if age_days:
+        stamp = dt_util.utcnow().timestamp() - age_days * 86400
+        os.utime(path, (stamp, stamp))
+    return path
+
+
+async def test_a_ring_when_away_records_a_clip_with_the_same_picture(hass, tmp_path, services, sent):
+    doorbells = await start(hass, directory=str(tmp_path / "clips"), snapshots=hass.config.path("www/snaps"))
+    await ring(hass)
+
+    assert len(services.snapshot) == 1 and len(services.record) == 1
+    record = services.record[0].data
+    assert record["entity_id"] == "camera.front"
+    assert record["duration"] == 20 and record["lookback"] == 5
+    assert record["filename"].startswith(str(tmp_path / "clips") + "/front_door_ring_")
+    clip = doorbells.clips[0]
+    assert clip["doorbell"] == "Front door" and clip["notified"] is True
+    assert clip["video"].endswith(".mp4") and clip["image"].endswith(".jpg")
+    assert clip["image"].startswith("front_door_ring_")
+    # The notification used that picture.
+    assert sent.await_args.args[0]["imageUrl"] == f"/local/snaps/{clip['image']}"
+
+
+async def test_no_clip_when_somebody_is_home(hass, tmp_path, services, sent):
+    doorbells = await start(hass, **folders(tmp_path))
+    hass.states.async_set(DELFI, "home")
+    await ring(hass)
+    assert services.record == [] and doorbells.clips == []
+
+
+async def test_recording_can_be_turned_on_for_home_and_off_for_away(hass, tmp_path, services, sent):
+    doorbells = await start(hass, **folders(tmp_path))
+    doorbells.set_recording(home=True, away=False)
+    hass.states.async_set(DELFI, "home")
+    await ring(hass, doorbells)
+    assert len(doorbells.clips) == 1
+    hass.states.async_set(DELFI, "not_home")
+    await ring(hass)
+    assert len(doorbells.clips) == 1
+
+
+async def test_a_clip_is_kept_even_when_nobody_is_notified(hass, tmp_path, services, sent):
+    doorbells = await start(hass, **folders(tmp_path))
+    doorbells.set_notification("devices", away=False)
+    doorbells.set_notification("users", away=False)
+    await ring(hass)
+    sent.assert_not_awaited()
+    assert doorbells.clips[0]["notified"] is False
+
+
+async def test_it_records_without_the_past_when_the_stream_is_not_running(hass, tmp_path, services, sent):
+    calls = []
+
+    async def record(call):
+        calls.append(dict(call.data))
+        if "lookback" in call.data:
+            raise RuntimeError("no stream")
+
+    hass.services.async_register("camera", "record", record)
+    doorbells = await start(hass, **folders(tmp_path))
+    await ring(hass)
+    assert ["lookback" in call for call in calls] == [True, False]
+    assert len(doorbells.clips) == 1
+
+
+async def test_a_failed_recording_leaves_no_clip_and_no_picture(hass, tmp_path, services, sent):
+    async def record(call):
+        raise RuntimeError("no stream")
+
+    async def snapshot(call):
+        touch(os.path.dirname(call.data["filename"]), os.path.basename(call.data["filename"]))
+
+    hass.services.async_register("camera", "record", record)
+    hass.services.async_register("camera", "snapshot", snapshot)
+    doorbells = await start(hass, **folders(tmp_path))
+    await ring(hass)
+    assert doorbells.clips == []
+    assert os.listdir(tmp_path / "snaps") == []
+    sent.assert_awaited_once()
+
+
+async def test_deleting_a_clip_removes_its_files(hass, tmp_path, services, sent):
+    doorbells = await start(hass, **folders(tmp_path))
+    await ring(hass)
+    clip = doorbells.clips[0]
+    video = touch(tmp_path / "clips", clip["video"])
+    image = touch(tmp_path / "snaps", clip["image"])
+    await doorbells.async_delete_clip(clip["id"])
+    assert doorbells.clips == [] and not os.path.exists(video) and not os.path.exists(image)
+    with pytest.raises(ValueError):
+        await doorbells.async_delete_clip(clip["id"])
+
+
+async def test_old_clips_are_deleted_by_themselves(hass, tmp_path, services, sent):
+    doorbells = await start(hass, **folders(tmp_path))
+    doorbells.set_recording(keep_days=3)
+    await ring(hass, doorbells)
+    await ring(hass)
+    old, new = doorbells.clips[1], doorbells.clips[0]
+    # Two rings in the same second would share a name; in life the debounce keeps them apart.
+    old["video"], old["image"] = "front_door_ring_20260101_000000.mp4", "front_door_ring_20260101_000000.jpg"
+    old["time"] = (dt_util.utcnow() - timedelta(days=4)).isoformat()
+    old_video = touch(tmp_path / "clips", old["video"], 4)
+    old_image = touch(tmp_path / "snaps", old["image"], 4)
+    new_video = touch(tmp_path / "clips", new["video"])
+    stray = touch(tmp_path / "clips", "front_door_ring_20200101_000000.mp4", 10)
+    # Files of the cameras and of the visitor pictures are not ours to sweep here.
+    other = touch(tmp_path / "clips", "front_person_20200101_000000.mp4", 10)
+
+    await doorbells.async_cleanup()
+    assert doorbells.clips == [new]
+    assert not any(os.path.exists(path) for path in (old_video, old_image, stray))
+    assert os.path.exists(new_video) and os.path.exists(other)
+
+
+async def test_clips_are_kept_across_restarts_and_capped(hass, tmp_path, services, sent):
+    doorbells = await start(hass, **folders(tmp_path))
+    doorbells.set_recording(keep_days=7, home=True)
+    await ring(hass)
+    await doorbells.async_stop()
+
+    again = await start(hass, **folders(tmp_path))
+    assert [clip["id"] for clip in again.clips] == [doorbells.clips[0]["id"]]
+    assert again.recording["keep_days"] == 7 and again.recording["home"] is True
+
+
+async def test_the_card_reads_the_clips_and_where_to_play_them(hass, tmp_path, services, sent):
+    doorbells = await start(hass, directory="/media/clips", snapshots="/media/snapshots")
+    attributes = doorbells.attributes()
+    assert attributes["media_base"] == "media-source://media_source/local/clips"
+    assert attributes["image_base"] == "/media/local/snapshots"
+    assert attributes["clips"] == []
+    assert attributes["config"]["recording"] == {"home": False, "away": True, "before": 5, "after": 20, "keep_days": 14}
+
+
+async def test_recording_services(hass, tmp_path, services, sent):
+    assert await async_setup_component(hass, "sensor", {})
+    doorbells = AnnikaDoorbells(hass, config(**folders(tmp_path)))
+    hass.data[DATA_DOORBELLS] = doorbells
+    hass.config.components.add(DOMAIN)
+    hass.states.async_set(VISITOR, "off")
+    await async_load_platform(hass, "sensor", DOMAIN, {DISCOVERY_KIND: KIND_DOORBELLS}, {})
+    await hass.async_block_till_done()
+    entity = "sensor.annika_doorbells"
+
+    await hass.services.async_call(DOMAIN, "set_doorbell_recording", {"entity_id": entity, "home": True, "keep_days": 30}, blocking=True)
+    assert hass.states.get(entity).attributes["config"]["recording"]["home"] is True
+    assert hass.states.get(entity).attributes["config"]["recording"]["keep_days"] == 30
+
+    await ring(hass)
+    clip_id = hass.states.get(entity).attributes["clips"][0]["id"]
+    await hass.services.async_call(DOMAIN, "delete_doorbell_clip", {"entity_id": entity, "clip_id": clip_id}, blocking=True)
+    assert hass.states.get(entity).attributes["clips"] == []
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call(DOMAIN, "delete_doorbell_clip", {"entity_id": entity, "clip_id": "nope"}, blocking=True)
+    with pytest.raises((HomeAssistantError, vol.Invalid)):
+        await hass.services.async_call(DOMAIN, "set_doorbell_recording", {"entity_id": entity, "keep_days": 0}, blocking=True)

@@ -29,6 +29,14 @@
           "running": "Prendida",
           "disabled": "Programa apagado"
         }
+      },
+      "heating_status": {
+        "state": {
+          "off": "Apagada",
+          "standby": "En espera",
+          "idle": "En reposo",
+          "heating": "Calentando"
+        }
       }
     }
   },
@@ -80,6 +88,27 @@
     },
     "invalid_expiry": {
       "message": "Un código temporal necesita una hora futura, dentro de 30 días"
+    },
+    "heating_disabled": {
+      "message": "La calefacción está apagada"
+    },
+    "heating_unknown_zone": {
+      "message": "Zona desconocida {zone}"
+    },
+    "heating_unknown_thermostat": {
+      "message": "{thermostat} no es un termostato de esta zona"
+    },
+    "heating_unknown_target": {
+      "message": "Elegí una zona o un termostato"
+    },
+    "heating_target_required": {
+      "message": "Indicá una temperatura, o apagalo"
+    },
+    "heating_invalid_slot": {
+      "message": "Horario inválido: {error}"
+    },
+    "heating_invalid_season": {
+      "message": "Temporada inválida: {error}"
     }
   }
 }

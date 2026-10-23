@@ -33,6 +33,7 @@ from .pool_filter import (
     unique_enabled,
     unique_minutes,
     unique_next_start,
+    unique_notify,
     unique_run,
     unique_run_enabled,
     unique_run_time,
@@ -82,6 +83,38 @@ class PoolFilterEnabledSwitch(_ScheduleEntity, SwitchEntity, RestoreEntity):
     async def async_turn_off(self, **kwargs: Any) -> None:
         self._pool_filter.settings.enabled = False
         self._pool_filter.settings_changed()
+
+
+class PoolFilterNotifySwitch(_ScheduleEntity, SwitchEntity, RestoreEntity):
+    """Whether the runs send an Annika event when they start and end."""
+
+    def __init__(self, pool_filter: AnnikaPoolFilter) -> None:
+        super().__init__(pool_filter)
+        self._attr_name = f"{pool_filter.name} Notifications"
+        self._attr_unique_id = unique_notify(pool_filter)
+
+    @property
+    def is_on(self) -> bool:
+        return self._pool_filter.settings.notify is not False
+
+    @property
+    def icon(self) -> str:
+        return "mdi:bell-outline" if self.is_on else "mdi:bell-off-outline"
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        self._pool_filter.settings.notify = last_state is None or last_state.state == STATE_ON
+        await self._listen()
+        self._pool_filter.notify()
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        self._pool_filter.settings.notify = True
+        self._pool_filter.notify()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        self._pool_filter.settings.notify = False
+        self._pool_filter.notify()
 
 
 class PoolFilterRunSwitch(_ScheduleEntity, SwitchEntity, RestoreEntity):
@@ -277,6 +310,7 @@ class PoolFilterStatusSensor(_ScheduleEntity, SensorEntity, RestoreEntity):
             ],
             "entities": {
                 "enabled": entity("switch", unique_enabled(pool_filter)),
+                "notify": entity("switch", unique_notify(pool_filter)) if pool_filter.notify_view else None,
                 "run": entity("button", unique_run(pool_filter)),
                 "stop": entity("button", unique_stop(pool_filter)),
                 "next_start": entity("sensor", unique_next_start(pool_filter)),
@@ -327,7 +361,8 @@ def sensors(pool_filter: AnnikaPoolFilter) -> list[SensorEntity]:
 
 
 def switches(pool_filter: AnnikaPoolFilter) -> list[SwitchEntity]:
-    return [PoolFilterEnabledSwitch(pool_filter)] + [
+    notify = [PoolFilterNotifySwitch(pool_filter)] if pool_filter.notify_view else []
+    return [PoolFilterEnabledSwitch(pool_filter), *notify] + [
         PoolFilterRunSwitch(pool_filter, season, index)
         for season in pool_filter.seasons
         for index in range(len(season.runs))

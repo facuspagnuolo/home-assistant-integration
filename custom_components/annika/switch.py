@@ -14,9 +14,9 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
-from . import alarm_panel_entities, irrigation_entities, locks_entities, pool_filter_entities
+from . import alarm_panel_entities, heating_entities, irrigation_entities, locks_entities, pool_filter_entities
 from .alarm import ATTR_SOURCE_ENTITY_ID, DATA_ALARM, AnnikaAlarmSensor, AnnikaAlarmSensors
-from .const import DISCOVERY_KIND, KIND_ALARM, KIND_IRRIGATION, KIND_LOCKS, KIND_POOL_FILTER
+from .const import DISCOVERY_KIND, KIND_ALARM, KIND_HEATING, KIND_IRRIGATION, KIND_LOCKS, KIND_POOL_FILTER
 from .irrigation import DATA_IRRIGATION
 
 
@@ -37,6 +37,9 @@ async def async_setup_platform(
 
     if discovery_info.get(DISCOVERY_KIND) == KIND_ALARM:
         await alarm_panel_entities.async_setup_platform(hass, "switch", async_add_entities)
+        return
+    if discovery_info.get(DISCOVERY_KIND) == KIND_HEATING:
+        await heating_entities.async_setup_platform(hass, "switch", async_add_entities)
         return
     if discovery_info.get(DISCOVERY_KIND) == KIND_LOCKS:
         await locks_entities.async_setup_platform(hass, "switch", async_add_entities)

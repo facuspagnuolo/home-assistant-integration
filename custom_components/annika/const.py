@@ -19,6 +19,7 @@ CONF_ALARM = "alarm"
 CONF_CAMERAS = "cameras"
 CONF_DOORBELLS = "doorbell"
 CONF_LOCKS = "locks"
+CONF_HEATING = "heating"
 
 # What a platform was loaded for: several features share the switch and sensor
 # platforms, and each discovery call says which one it is setting up.
@@ -29,3 +30,4 @@ KIND_ALARM = "alarm"
 KIND_CAMERAS = "cameras"
 KIND_DOORBELLS = "doorbells"
 KIND_LOCKS = "locks"
+KIND_HEATING = "heating"

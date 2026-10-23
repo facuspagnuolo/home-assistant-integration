@@ -29,6 +29,14 @@
           "running": "On",
           "disabled": "Schedule off"
         }
+      },
+      "heating_status": {
+        "state": {
+          "off": "Off",
+          "standby": "Standby",
+          "idle": "Idle",
+          "heating": "Heating"
+        }
       }
     }
   },
@@ -80,6 +88,27 @@
     },
     "invalid_expiry": {
       "message": "A temporary code needs a time in the future, within 30 days"
+    },
+    "heating_disabled": {
+      "message": "The heating is switched off"
+    },
+    "heating_unknown_zone": {
+      "message": "Unknown zone {zone}"
+    },
+    "heating_unknown_thermostat": {
+      "message": "{thermostat} is not a thermostat of this zone"
+    },
+    "heating_unknown_target": {
+      "message": "Choose a zone or a thermostat"
+    },
+    "heating_target_required": {
+      "message": "Give a target, or turn it off"
+    },
+    "heating_invalid_slot": {
+      "message": "Invalid schedule: {error}"
+    },
+    "heating_invalid_season": {
+      "message": "Invalid season: {error}"
     }
   }
 }
