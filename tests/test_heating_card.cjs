@@ -95,7 +95,7 @@ function card() {
 test('registers the card with the ac card as its legacy dependency', () => {
   const entry = load().AnnikaCards[0]
   assert.equal(entry[0], 'annika-heating-card')
-  same(entry[2], ['annika-ac-card'])
+  same(entry[2], ['annika-ac-tiles-card'])
 })
 
 test('needs an entity or a list of entities', () => {
@@ -103,13 +103,25 @@ test('needs an entity or a list of entities', () => {
   assert.throws(() => new Card().setConfig({}), /entity/)
 })
 
-test('the strip shows the general switch and the boiler', () => {
+test('the strip is native tiles: the general switch (tap to flip it) and the boiler (read only)', () => {
   const el = card()
   const html = el._stripHtml(config, state, el._texts)
-  assert.ok(html.includes('data-master') && html.includes('<ha-switch checked') && html.includes('heating season (12.0°)'))
-  assert.ok(html.includes('stile heat') && html.includes('Running · 1 of 2 thermostats heating'))
-  const off = el._stripHtml({ ...config, enabled: false }, state, el._texts)
-  assert.ok(off.includes('nothing is automated') && !off.includes('<ha-switch checked'))
+  assert.ok(html.includes('data-strip="master"') && html.includes('data-strip="boiler:boiler"'))
+  assert.ok(!html.includes('<ha-switch'), 'the native tile has no switch of its own')
+  const master = el._strip.master
+  assert.strictEqual(master.type, 'tile')
+  assert.strictEqual(master.entity, config.entities.master)
+  same(master.tap_action, { action: 'toggle' })
+  same(master.icon_tap_action, { action: 'toggle' })
+  const boiler = el._strip['boiler:boiler']
+  assert.strictEqual(boiler.type, 'tile')
+  same(boiler.tap_action, { action: 'more-info' }) // tapping the boiler must not fight the demand
+  same(boiler.icon_tap_action, { action: 'more-info' })
+  // until the native tile is ready the plain one says the same
+  assert.ok(html.includes('heating season (12.0°)') && html.includes('stile heat') && html.includes('Running · 1 of 2 thermostats heating'))
+  assert.ok(el._stripHtml({ ...config, enabled: false }, state, el._texts).includes('nothing is automated'))
+  const none = el._stripHtml({ ...config, entities: {} }, state, el._texts)
+  assert.ok(!none.includes('data-strip="master"') && !el._strip.master, 'no entity yet, no native tile')
 })
 
 test('a zone shows its target, why, what is next and the manual count', () => {

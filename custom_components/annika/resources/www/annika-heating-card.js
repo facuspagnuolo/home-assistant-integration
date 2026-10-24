@@ -20,7 +20,7 @@
 // activity.
 //
 // A dashboard that lists `entities:` instead of an `entity:` still gets the thermostat
-// tiles of annika-ac-card, as before.
+// tiles of annika-ac-tiles-card, as before.
 ;(() => {
   const CARD = 'annika-heating-card'
   const SERVICE_DOMAIN = 'annika'
@@ -276,17 +276,16 @@ input[type=time] { width: 124px; }
 button:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
 .u { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
-.stile { display: flex; align-items: center; gap: 12px; padding: 12px 14px; --tone: var(--primary-color); }
+.stile { display: flex; align-items: center; gap: 16px; padding: 16px; box-sizing: border-box; --tone: var(--primary-color); }
+.stilehost { display: block; }
+.stilehost > * { display: block; }
 .stile.click { cursor: pointer; }
-.stile .ico { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; flex: none; color: var(--tone); background: color-mix(in srgb, var(--tone) 16%, transparent); --mdc-icon-size: 22px; }
+.stile .ico { width: 40px; height: 40px; display: grid; place-items: center; flex: none; color: var(--tone); --mdc-icon-size: 24px; }
 .stile .txt { flex: 1; min-width: 0; }
 .stile .t { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .stile .s { color: var(--secondary-text-color); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .stile.heat { --tone: var(--warning-color, #D9954B); }
 .stile.idle, .stile.off { --tone: var(--disabled-color); }
-.stile.heat .ico { animation: annika-heating-pulse 2s ease-in-out infinite; }
-@keyframes annika-heating-pulse { 0%,100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--tone) 40%, transparent); } 50% { box-shadow: 0 0 0 8px transparent; } }
-@media (prefers-reduced-motion: reduce) { .annika-heating .stile.heat .ico { animation: none; } }
 .zones { margin-top: 16px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
 .zone { padding: 0; overflow: hidden; --tone: var(--warning-color, #D9954B); }
 .zone.full { grid-column: 1 / -1; }
@@ -308,7 +307,7 @@ button:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 
 .chart { padding: 6px 12px 0; }
 .chart svg { width: 100%; height: auto; display: block; }
 .chart-wrap { position: relative; }
-.chart-toggle { position: absolute; top: 6px; right: 16px; display: flex; gap: 6px; z-index: 1; }
+.chart-toggle { display: flex; justify-content: flex-end; gap: 6px; padding: 8px 16px 0; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 0 16px 8px; font-size: 12px; color: var(--secondary-text-color); }
 .legend i { display: inline-block; width: 14px; height: 3px; margin-right: 6px; vertical-align: middle; border-radius: 2px; }
 .tag { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding: 2px 9px; font-size: 12px; --mdc-icon-size: 13px; white-space: nowrap; background: rgba(255,255,255,.07); color: var(--secondary-text-color); font-weight: 400; }
@@ -354,11 +353,10 @@ td.act-cell { text-align: right; white-space: nowrap; }
 .dd { position: relative; display: inline-flex; align-items: center; max-width: 100%; height: 34px; padding: 0 32px 0 12px; border: 0; border-radius: 12px; background: color-mix(in srgb, var(--disabled-color) 20%, transparent); color: var(--primary-text-color); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
 .dd.empty { color: var(--secondary-text-color); }
 .dd::after { content: ''; position: absolute; top: 50%; right: 6px; width: 24px; height: 24px; margin-top: -12px; pointer-events: none; background: var(--secondary-text-color); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M7,10L12,15L17,10H7Z'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M7,10L12,15L17,10H7Z'/%3E%3C/svg%3E") center / contain no-repeat; }
-.popover { position: fixed; z-index: 10; width: 320px; max-width: calc(100vw - 24px); max-height: 60vh; overflow: auto; background: var(--card-background-color, #121415); border: 1px solid rgba(255,255,255,.12); box-shadow: 0 12px 32px rgba(0,0,0,.6); padding: 12px 14px; box-sizing: border-box; }
+.popover { position: absolute; z-index: 10; width: 320px; max-width: calc(100vw - 24px); max-height: 60vh; overflow: auto; background: var(--card-background-color, #121415); border: 1px solid rgba(255,255,255,.12); box-shadow: 0 12px 32px rgba(0,0,0,.6); padding: 12px 14px; box-sizing: border-box; }
 .pop-title { font-weight: 500; }
 .pop-sub { color: var(--secondary-text-color); font-size: 12px; margin: 2px 0 8px; }
 .pop-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid var(--divider-color); cursor: pointer; }
-.pop-row .muted { margin-left: auto; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rule { display: flex; align-items: flex-start; gap: 14px; padding: 12px 4px; }
 .rule .avatar { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; flex: none; --mdc-icon-size: 18px; background: color-mix(in srgb, var(--primary-color) 22%, transparent); color: var(--primary-color); }
 .rule.off .avatar { background: rgba(255,255,255,.07); color: var(--secondary-text-color); }
@@ -386,15 +384,15 @@ td.act-cell { text-align: right; white-space: nowrap; }
 
   class AnnikaHeatingCard extends HTMLElement {
     setConfig(config) {
-      // The old way: a list of climate entities, drawn by annika-ac-card.
+      // The old way: a list of climate entities, drawn by annika-ac-tiles-card.
       if (!config.entity) {
         if (!Array.isArray(config.entities) || config.entities.length === 0) {
           throw new Error(`${CARD}: "entity" is required (or a non-empty "entities" list of climate entities)`)
         }
         this._legacy = true
         if (!this._card) {
-          const AcCard = customElements.get('annika-ac-card')
-          if (!AcCard) throw new Error(`${CARD}: annika-ac-card.js is not loaded`)
+          const AcCard = customElements.get('annika-ac-tiles-card')
+          if (!AcCard) throw new Error(`${CARD}: annika-ac-tiles-card.js is not loaded`)
           this._card = new AcCard()
           this.innerHTML = ''
           this.appendChild(this._card)
@@ -411,6 +409,8 @@ td.act-cell { text-align: right; white-space: nowrap; }
       this._pop = null
       this._settings = null
       this._tiles = {}
+      this._strip = {}
+      this._stripTiles = {}
       this._history = {}
       this._historyAt = 0
       this._historyBusy = false
@@ -436,6 +436,10 @@ td.act-cell { text-align: right; white-space: nowrap; }
     disconnectedCallback() {
       clearInterval(this._tick)
       this._tick = null
+      if (this._popObserver) {
+        this._popObserver.disconnect()
+        this._popObserver = null
+      }
       if (this._outside) document.removeEventListener('click', this._outside)
     }
 
@@ -446,7 +450,7 @@ td.act-cell { text-align: right; white-space: nowrap; }
         return
       }
       this._render()
-      if (this._settings) Object.values(this._tiles).forEach((el) => (el.hass = hass))
+      Object.values(this._tiles).forEach((el) => (el.hass = hass))
     }
 
     getCardSize() {
@@ -753,7 +757,41 @@ td.act-cell { text-align: right; white-space: nowrap; }
 
     // --- the strip ------------------------------------------------------------------
 
+    // Each tile of the strip is Home Assistant's own tile card (a switch is flipped by tapping
+    // it, as in the pool dashboard); the plain tile below stays until that card is ready.
+    _stripTile(key, config, fallback) {
+      if (!config) return fallback
+      this._strip[key] = config
+      return `<div class="stilehost" data-strip="${key}">${fallback}</div>`
+    }
+
+    async _mountStrip() {
+      if (!window.loadCardHelpers || !window.Annika) return
+      try {
+        const helpers = await window.loadCardHelpers()
+        for (const host of this.querySelectorAll('[data-strip]')) {
+          const key = host.dataset.strip
+          const config = this._strip[key]
+          if (!config) continue
+          const id = `strip:${key}`
+          const signature = JSON.stringify(config)
+          let entry = this._stripTiles[id]
+          if (!entry || entry.signature !== signature) {
+            const element = await helpers.createCardElement(config)
+            element.hass = this._hass
+            entry = { signature, element }
+            this._stripTiles[id] = entry
+            this._tiles[id] = element
+          }
+          if (host.isConnected && host.firstElementChild !== entry.element) host.replaceChildren(entry.element)
+        }
+      } catch (error) {
+        // The plain tiles stay.
+      }
+    }
+
     _stripHtml(config, state, t) {
+      this._strip = {}
       const forecast = config.weather && this._stateOf(config.weather)
       const temp = forecast && forecast.attributes && Number.isFinite(parseFloat(forecast.attributes.temperature))
         ? deg(parseFloat(forecast.attributes.temperature)) : ''
@@ -763,21 +801,27 @@ td.act-cell { text-align: right; white-space: nowrap; }
         else if (config.season.active === false) sub = fill(t.season_off, { temp })
         else sub = t.season_any
       }
-      const master = `<ha-card class="stile click ${config.enabled ? '' : 'off'}" data-master>
+      const entity = config.entities && config.entities.master
+      const master = this._stripTile('master', entity && annika().tileConfig(
+        { entity, name: t.heating, icon: 'mdi:home-thermometer', color: 'primary' },
+        { tap_action: { action: 'toggle' }, icon_tap_action: { action: 'toggle' } },
+      ), `<ha-card class="stile ${entity ? 'click' : ''} ${config.enabled ? '' : 'off'}" ${entity ? 'data-master' : ''}>
         <div class="ico">${this._icon('mdi:home-thermometer')}</div>
         <div class="txt"><div class="t">${escapeHtml(t.heating)}</div><div class="s">${escapeHtml(sub)}</div></div>
-        <ha-switch ${config.enabled ? 'checked' : ''} style="pointer-events:none"></ha-switch>
-      </ha-card>`
+      </ha-card>`)
       const boilers = config.boilers.map((boiler) => {
         const on = (this._stateOf(boiler.entity) || {}).state === 'on'
         const zones = config.zones.filter((zone) => boiler.zones.includes(zone.id))
         const members = zones.flatMap((zone) => zone.thermostats)
         const heating = members.filter((th) => this._heating(th.entity)).length
         const text = on ? `${t.running} · ${fill(t.of_heating, { n: heating, total: members.length })}` : t.boiler_idle
-        return `<ha-card class="stile ${on ? 'heat' : 'idle'}">
+        return this._stripTile(`boiler:${boiler.id}`, boiler.entity && annika().tileConfig(
+          { entity: boiler.entity, name: boiler.name || t.boiler, icon: 'mdi:radiator', color: 'orange' },
+          { tap_action: { action: 'more-info' }, icon_tap_action: { action: 'more-info' } },
+        ), `<ha-card class="stile ${on ? 'heat' : 'idle'}">
           <div class="ico">${this._icon('mdi:radiator')}</div>
           <div class="txt"><div class="t">${escapeHtml(boiler.name || t.boiler)}</div><div class="s">${escapeHtml(text)}</div></div>
-        </ha-card>`
+        </ha-card>`)
       }).join('')
       return `<div class="strip">${master}${boilers}</div>`
     }
@@ -1007,20 +1051,39 @@ td.act-cell { text-align: right; white-space: nowrap; }
       const known = config.motion_sensors.map((item) => item.entity)
       const sensors = [...config.motion_sensors, ...chosen.filter((entity) => !known.includes(entity)).map((entity) => ({ entity, name: entity }))]
       const rows = sensors
-        .map((sensor) => `<label class="pop-row"><input type="checkbox" class="annika-check" data-pop-sensor="${escapeHtml(sensor.entity)}" ${chosen.includes(sensor.entity) ? 'checked' : ''}> ${escapeHtml(sensor.name)}<span class="muted">${escapeHtml(sensor.entity)}</span></label>`)
+        .map((sensor) => `<label class="pop-row"><input type="checkbox" class="annika-check" data-pop-sensor="${escapeHtml(sensor.entity)}" ${chosen.includes(sensor.entity) ? 'checked' : ''}> ${escapeHtml(sensor.name)}</label>`)
         .join('')
       return `<div class="popover" data-popover><div class="pop-title">${escapeHtml(t.motion_sensors)}</div><div class="pop-sub">${escapeHtml(t.motion_hint)}</div>${rows}</div>`
     }
 
     _placePopover() {
-      const pop = this.querySelector('[data-popover]')
-      if (!pop || !this._pop) return
-      const anchor = this.querySelector(`[data-slot-${this._pop.kind === 'rooms' ? 'rooms' : this._pop.add ? 'addcond' : 'sensors'}="${this._pop.slot}"]`)
-        || this.querySelector(`[data-slot-addcond="${this._pop.slot}"]`) || this.querySelector(`[data-slot-sensors="${this._pop.slot}"]`)
-      if (!anchor || !anchor.getBoundingClientRect) return
-      const box = anchor.getBoundingClientRect()
-      pop.style.left = `${Math.max(12, Math.min(box.left, window.innerWidth - 336))}px`
-      pop.style.top = `${box.bottom + 6}px`
+      if (this._popObserver) {
+        this._popObserver.disconnect()
+        this._popObserver = null
+      }
+      const host = this.querySelector('.annika-heating')
+      if (!this._pop || !host) return
+      // Placed inside the card, not on the window: a card with containment makes `fixed` relative to itself.
+      const place = () => {
+        const pop = this.querySelector('[data-popover]')
+        if (!pop || !this._pop) return
+        const kind = this._pop.kind === 'rooms' ? 'rooms' : this._pop.add ? 'addcond' : 'sensors'
+        const anchor = this.querySelector(`[data-slot-${kind}="${this._pop.slot}"]`)
+          || this.querySelector(`[data-slot-addcond="${this._pop.slot}"]`) || this.querySelector(`[data-slot-sensors="${this._pop.slot}"]`)
+        if (!anchor || !anchor.getBoundingClientRect) return
+        const box = anchor.getBoundingClientRect()
+        const area = host.getBoundingClientRect()
+        pop.style.left = `${Math.max(0, Math.min(box.left - area.left, area.width - pop.offsetWidth))}px`
+        pop.style.top = `${box.bottom - area.top + 6}px`
+      }
+      place()
+      // The tiles above the schedule are mounted after this render and push the schedule down, and
+      // the width settles later too: the popover follows the card's size, or it stays where the
+      // anchor used to be (the top left corner).
+      if (typeof ResizeObserver === 'function') {
+        this._popObserver = new ResizeObserver(place)
+        this._popObserver.observe(host)
+      }
     }
 
     // --- editing a schedule -----------------------------------------------------------
@@ -1235,7 +1298,7 @@ td.act-cell { text-align: right; white-space: nowrap; }
       this._bodyElement().innerHTML = `
         <style>
           annika-heating-card { display: block; container-type: inline-size; }
-          .annika-heating { display: block; }
+          .annika-heating { display: block; position: relative; }
           ${(window.Annika && window.Annika.CHECKBOX_CSS) || ''}
           ${(window.Annika && window.Annika.SELECT_CSS) || ''}
           ${STYLE}
@@ -1249,6 +1312,7 @@ td.act-cell { text-align: right; white-space: nowrap; }
       this._bind(config)
       this._placePopover()
       if (this._settings) this._mountSettings()
+      this._mountStrip()
       this._headings(this)
       requestAnimationFrame(() => { this.style.minHeight = '' })
     }
@@ -1398,7 +1462,7 @@ td.act-cell { text-align: right; white-space: nowrap; }
   }
 
   // Declared, not registered: annika-common.js registers once its helpers exist.
-  ;(window.AnnikaCards ||= []).push([CARD, AnnikaHeatingCard, ['annika-ac-card']])
+  ;(window.AnnikaCards ||= []).push([CARD, AnnikaHeatingCard, ['annika-ac-tiles-card']])
 
   window.customCards = window.customCards || []
   window.customCards.push({

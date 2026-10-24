@@ -4,8 +4,7 @@
       heating:
         name: Annika Heating
         weather: weather.forecast_home          # optional: the heating season follows it
-        workday: binary_sensor.today_working_day  # optional: tells workdays from the rest (default Mon-Fri)
-        day_mode: sensor                        # optional: sensor | weekend | days (see below)
+        day_mode: binary_sensor.today_working_day  # a sensor (on: workday), weekend or days; see below
         season:                                 # optional, and edited from the card
           on_below: 14                          # heating starts when the forecast stays below this...
           off_above: 18                         # ...and stops when it stays above this...
@@ -31,11 +30,10 @@
               non_workday:
                 - {time: "05:30", name: Morning, target: 20}
 
-Telling the days apart (day_mode): `sensor` has two schedules, workday and non_workday, and
-the sensor above says which one today is (Monday to Friday when there is none or it is
-unavailable); `weekend` has the same two but Monday-Friday against the weekend, whatever the
-sensor says; `days` has a schedule for each day of the week (monday ... sunday). Without
-day_mode it is `sensor` when a workday sensor is given and `weekend` when not.
+Telling the days apart (day_mode): a sensor has two schedules, workday and non_workday, and
+the sensor (on: workday) says which one today is (Monday to Friday when it is unavailable);
+`weekend` has the same two but Monday-Friday against the weekend; `days` has a schedule for
+each day of the week (monday ... sunday). Without day_mode it is `weekend`.
 
 What decides a thermostat's target, the first that applies:
 
@@ -72,6 +70,7 @@ from homeassistant.helpers.event import async_track_state_change_event, async_tr
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
+from .alarm_panel import DATA_ALARM_PANEL
 from .cameras import slug
 from .const import DOMAIN
 
@@ -106,6 +105,8 @@ def day_keys(mode: str) -> tuple[str, ...]:
 OFF = "off"
 
 MOTION_CLASSES = ("motion", "occupancy", "presence")
+# What the alarm watches that is not somebody moving about the house.
+CONTACT_CLASSES = ("door", "garage_door", "window", "opening", "lock", "vibration", "tamper", "safety")
 
 _CLIMATE = vol.All(cv.entity_id, vol.Match(r"^climate\."))
 _BINARY = vol.All(cv.entity_id, vol.Match(r"^binary_sensor\."))
@@ -180,7 +181,8 @@ def _entity_of(item: Any) -> str:
 
 
 def _mode_of(config: dict) -> str:
-    return config.get("day_mode") or ("sensor" if config.get("workday") else "weekend")
+    mode = config.get("day_mode") or "weekend"
+    return mode if mode in DAY_MODES else "sensor"
 
 
 def _check_references(config: dict) -> dict:
@@ -220,10 +222,9 @@ HEATING_SCHEMA = vol.All(
         {
             vol.Optional("name", default="Annika Heating"): cv.string,
             vol.Optional("weather"): _WEATHER,
-            vol.Optional("workday"): cv.entity_id,
-            # sensor: the workday sensor decides (Mon-Fri without one); weekend: Mon-Fri against
-            # Sat-Sun whatever the sensor says; days: a schedule for each day of the week.
-            vol.Optional("day_mode"): vol.In(DAY_MODES),
+            # An entity (on: workday, off: not), weekend (Mon-Fri against Sat-Sun) or days (one
+            # schedule per day of the week).
+            vol.Optional("day_mode"): vol.Any(vol.In(("weekend", "days")), cv.entity_id),
             # Whether a change made on a thermostat itself is kept as a manual one.
             vol.Optional("adopt_manual", default=True): cv.boolean,
             vol.Optional("season", default={}): SEASON_SCHEMA,
@@ -322,7 +323,7 @@ class AnnikaHeating:
         self.hass = hass
         self.name: str = config["name"]
         self.weather: str | None = config.get("weather")
-        self.workday_entity: str | None = config.get("workday")
+        self.workday_entity: str | None = config["day_mode"] if _mode_of(config) == "sensor" else None
         self.day_mode: str = _mode_of(config)
         self.day_keys: tuple[str, ...] = day_keys(self.day_mode)
         self.adopt: bool = config["adopt_manual"]
@@ -366,6 +367,8 @@ class AnnikaHeating:
         self._track_sensors()
         self._started = True
         await self._async_evaluate()
+        # The entities may have been added before the stored state was loaded: tell them what it is.
+        self.notify()
 
     async def async_stop(self, _event=None) -> None:
         self._started = False
@@ -676,7 +679,13 @@ class AnnikaHeating:
         self._changed()
 
     async def _async_evaluate(self, force: bool = False) -> None:
-        if not self._started or not self.enabled:
+        if not self._started:
+            return
+        if not self.enabled:
+            # Switched off: no schedule and no season, but the boilers still follow whatever
+            # thermostats are asking for heat, such as one somebody turned on by hand.
+            await self._sync_boilers()
+            self.notify()
             return
         if self._running:
             self._pending = True
@@ -768,8 +777,6 @@ class AnnikaHeating:
     ) -> None:
         """Hold a target on a zone or on some of its thermostats, until they are put back to Auto."""
 
-        if not self.enabled:
-            raise HeatingError("heating_disabled")
         if not zone and not thermostats:
             raise HeatingError("unknown_target")
         pairs = self._resolve(zone, thermostats)
@@ -806,6 +813,12 @@ class AnnikaHeating:
                 for owner, th in released:
                     self._log("auto", zone=owner.id, thermostat=th.entity)
         self._changed()
+        if not self.enabled:
+            # Nothing runs the schedule: what was held by hand goes back to off.
+            for _zone, th in released:
+                await self._ensure(th, OFF, force=True)
+            await self._sync_boilers()
+            return
         await self._async_evaluate(force=True)
 
     async def async_set_schedule(self, zone: str, day: str, slots: list[dict[str, Any]]) -> None:
@@ -849,11 +862,44 @@ class AnnikaHeating:
         return {"master": registry.async_get_entity_id("switch", DOMAIN, f"{DOMAIN}_heating_enabled")}
 
     def _motion_sensors(self) -> list[dict[str, str]]:
-        found = []
+        """What a slot can wait on: the sensors that say motion, and the ones of the alarm.
+
+        The alarm's sensors (Kitchen, Living...) usually come from a panel that gives them no
+        device class, so the class alone would leave out the ones the house is known by.
+        """
+        found: dict[str, str] = {}
         for state in self.hass.states.async_all("binary_sensor"):
-            if state.attributes.get("device_class") in MOTION_CLASSES:
-                found.append({"entity": state.entity_id, "name": state.attributes.get("friendly_name") or state.entity_id})
-        return sorted(found, key=lambda item: item["name"].lower())
+            if state.attributes.get("device_class") not in MOTION_CLASSES:
+                continue
+            # Annika's own twin of an alarm sensor goes quiet when the zone is disabled, which
+            # would read as "no motion" for ever. The sensor it follows is listed instead.
+            if state.attributes.get("source_entity_id"):
+                continue
+            found[state.entity_id] = state.attributes.get("friendly_name") or state.entity_id
+        for entity_id, name in self._alarm_sensors().items():
+            found[entity_id] = name
+        return sorted(
+            ({"entity": entity, "name": name} for entity, name in found.items()),
+            key=lambda item: item["name"].lower(),
+        )
+
+    def _alarm_sensors(self) -> dict[str, str]:
+        """The motion sensors of the alarm zones, by entity, under the name the alarm gives them."""
+        panel = self.hass.data.get(DATA_ALARM_PANEL)
+        rules = getattr(panel, "rules", None)
+        found: dict[str, str] = {}
+        for zone in getattr(rules, "zones", []):
+            for sensor in zone.sensors:
+                for entity_id in sensor.entities:
+                    if not entity_id.startswith("binary_sensor."):
+                        continue
+                    state = self.hass.states.get(entity_id)
+                    kind = (state.attributes.get("device_class") if state else None) or sensor.detail
+                    if kind in CONTACT_CLASSES:
+                        continue
+                    friendly = (state.attributes.get("friendly_name") if state else None) or entity_id
+                    found[entity_id] = sensor.name if len(sensor.entities) == 1 else f"{sensor.name} · {friendly}"
+        return found
 
     def _slot_view(self, slot: dict[str, Any]) -> dict[str, Any]:
         return {

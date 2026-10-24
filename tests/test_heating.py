@@ -36,7 +36,7 @@ WORKDAY_SLOTS = [
 def config(**overrides):
     values = {
         "weather": WEATHER,
-        "workday": WORKDAY,
+        "day_mode": WORKDAY,
         "boilers": [{"name": "Boiler", "entity": BOILER}],
         "zones": [
             {
@@ -311,9 +311,6 @@ async def test_master_off_switches_everything_off_once_and_leaves_it(hass, freez
     climate(hass, KITCHEN, "heat", 25)
     await advance(hass, freezer, 10)
     assert not calls.mode and not calls.temperature and heating.manual == {}
-    with pytest.raises(HeatingError) as error:
-        await heating.async_set_manual(zone="patio", target=20)
-    assert error.value.key == "heating_disabled"
 
 
 async def test_master_on_clears_manual_and_evaluates(hass, freezer, utc, calls):
@@ -324,6 +321,39 @@ async def test_master_on_clears_manual_and_evaluates(hass, freezer, utc, calls):
     await heating.async_set_enabled(True)
     assert heating.manual == {}
     assert {call.data["temperature"] for call in calls.temperature} == {22}
+
+
+async def test_a_manual_target_works_with_the_master_off_and_the_boiler_follows(hass, freezer, utc, calls):
+    heating = await start(hass, freezer, MON.replace(hour=18))
+    await heating.async_set_enabled(False)
+    calls.temperature.clear()
+    calls.on.clear()
+    await heating.async_set_manual(thermostats=[KITCHEN], target=24)
+    assert [(call.data["entity_id"], call.data["temperature"]) for call in calls.temperature] == [(KITCHEN, 24)]
+    climate(hass, KITCHEN, "heat", 24, "heating")
+    await hass.async_block_till_done()
+    assert [call.data["entity_id"] for call in calls.on] == [BOILER]
+    # Back to Auto with nothing running the schedule: it is off again, and so is the boiler.
+    hass.states.async_set(BOILER, "on")
+    calls.mode.clear()
+    calls.off.clear()
+    await heating.async_set_auto(thermostats=[KITCHEN])
+    assert [call.data["entity_id"] for call in calls.mode] == [KITCHEN]
+    climate(hass, KITCHEN, "off", None, "idle")
+    await hass.async_block_till_done()
+    assert {call.data["entity_id"] for call in calls.off} == {BOILER}
+
+
+async def test_a_manual_target_works_out_of_season(hass, freezer, utc, calls):
+    heating = await start(hass, freezer, MON.replace(hour=18))
+    heating.season["active"] = False
+    calls.temperature.clear()
+    await heating.async_set_manual(thermostats=[KITCHEN], target=23)
+    assert [(call.data["entity_id"], call.data["temperature"]) for call in calls.temperature] == [(KITCHEN, 23)]
+    climate(hass, KITCHEN, "heat", 23, "heating")
+    await hass.async_block_till_done()
+    assert [call.data["entity_id"] for call in calls.on] == [BOILER]
+    assert heating.attributes()["state"]["ground_floor"]["thermostats"][KITCHEN]["source"] == "manual"
 
 
 # --- the boilers --------------------------------------------------------------------------
@@ -471,6 +501,27 @@ async def test_motion_sensors_are_tracked_when_the_schedule_changes(hass, freeze
     assert heating._sensors == frozenset({"binary_sensor.other"})
 
 
+async def test_the_slot_can_wait_on_motion_sensors_and_the_ones_of_the_alarm(hass, freezer, utc, calls):
+    hass.states.async_set("binary_sensor.hall_pir", "off", {"device_class": "motion", "friendly_name": "Hall PIR"})
+    hass.states.async_set("binary_sensor.front_door", "off", {"device_class": "door", "friendly_name": "Front door"})
+    # What the alarm calls Kitchen has no device class; Annika's twin of it follows the zone's switch.
+    hass.states.async_set("binary_sensor.kitchen_motion_sensor", "off", {"friendly_name": "Kitchen Motion Sensor"})
+    hass.states.async_set("binary_sensor.kitchen_alarm", "off", {"device_class": "motion", "source_entity_id": "binary_sensor.kitchen_motion_sensor"})
+    zones = [
+        SimpleNamespace(sensors=[
+            SimpleNamespace(name="Kitchen", detail="motion", entities=["binary_sensor.kitchen_motion_sensor"]),
+            SimpleNamespace(name="Front", detail="door", entities=["binary_sensor.front_door"]),
+            SimpleNamespace(name="Hall", detail="motion", entities=["binary_sensor.hall_pir"]),
+        ])
+    ]
+    hass.data["annika_alarm_panel"] = SimpleNamespace(rules=SimpleNamespace(zones=zones))
+    heating = await start(hass, freezer, MON.replace(hour=23))
+    assert heating.attributes()["config"]["motion_sensors"] == [
+        {"entity": "binary_sensor.hall_pir", "name": "Hall"},
+        {"entity": "binary_sensor.kitchen_motion_sensor", "name": "Kitchen"},
+    ]
+
+
 # --- persistence ------------------------------------------------------------------------------
 
 
@@ -553,12 +604,16 @@ async def test_integration_creates_the_entities_and_services(hass, freezer, utc,
 # --- telling the days apart -----------------------------------------------------------------
 
 
-def test_day_mode_defaults_to_the_sensor_only_when_there_is_one():
+def test_day_mode_is_a_sensor_weekend_or_days():
     from custom_components.annika.heating import _mode_of
 
     assert _mode_of(config()) == "sensor"
+    assert config()["day_mode"] == WORKDAY
     assert _mode_of({"zones": []}) == "weekend"
+    assert _mode_of(config(day_mode="weekend")) == "weekend"
     assert _mode_of(config(day_mode="days", zones=[{"name": "A", "thermostats": [KITCHEN]}])) == "days"
+    with pytest.raises(vol.Invalid):
+        config(day_mode="every other day")
 
 
 async def test_weekend_mode_ignores_the_sensor(hass, freezer, utc, calls):
@@ -569,7 +624,7 @@ async def test_weekend_mode_ignores_the_sensor(hass, freezer, utc, calls):
 
 
 async def test_sensor_mode_without_a_sensor_uses_the_week(hass, freezer, utc, calls):
-    raw = {k: v for k, v in config().items() if k != "workday"}
+    raw = {k: v for k, v in config().items() if k != "day_mode"}
     heating = AnnikaHeating(hass, HEATING_SCHEMA({**raw}))
     assert heating.day_mode == "weekend"
 
