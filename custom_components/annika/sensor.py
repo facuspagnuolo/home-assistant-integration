@@ -31,7 +31,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
-from . import cameras_entities, doorbells_entities, heating_entities, irrigation_entities, locks_entities, pool_filter_entities
+from . import cameras_entities, doorbells_entities, heating_entities, ac_entities, irrigation_entities, locks_entities, pool_filter_entities
 from .actor import (
     ATTR_ACTOR_ID,
     ATTR_ACTOR_NAME,
@@ -40,7 +40,7 @@ from .actor import (
     DATA_ACTOR,
     AnnikaLastAction,
 )
-from .const import DISCOVERY_KIND, KIND_CAMERAS, KIND_DOORBELLS, KIND_HEATING, KIND_IRRIGATION, KIND_LOCKS, KIND_POOL_FILTER
+from .const import DISCOVERY_KIND, KIND_AC, KIND_CAMERAS, KIND_DOORBELLS, KIND_HEATING, KIND_IRRIGATION, KIND_LOCKS, KIND_POOL_FILTER
 from .irrigation import DATA_IRRIGATION
 
 # What a restored state may hand back. Home Assistant also stores the entity's
@@ -84,6 +84,10 @@ async def async_setup_platform(
 
     if discovery_info.get(DISCOVERY_KIND) == KIND_DOORBELLS:
         await doorbells_entities.async_setup_platform(hass, "sensor", async_add_entities)
+        return
+
+    if discovery_info.get(DISCOVERY_KIND) == KIND_AC:
+        await ac_entities.async_setup_platform(hass, "sensor", async_add_entities)
         return
 
     if discovery_info.get(DISCOVERY_KIND) == KIND_HEATING:

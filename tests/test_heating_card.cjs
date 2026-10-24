@@ -95,7 +95,7 @@ function card() {
 test('registers the card with the ac card as its legacy dependency', () => {
   const entry = load().AnnikaCards[0]
   assert.equal(entry[0], 'annika-heating-card')
-  same(entry[2], ['annika-ac-card'])
+  same(entry[2], ['annika-ac-tiles-card'])
 })
 
 test('needs an entity or a list of entities', () => {
@@ -106,10 +106,12 @@ test('needs an entity or a list of entities', () => {
 test('the strip shows the general switch and the boiler', () => {
   const el = card()
   const html = el._stripHtml(config, state, el._texts)
-  assert.ok(html.includes('data-master') && html.includes('<ha-switch checked') && html.includes('heating season (12.0°)'))
+  assert.ok(html.includes('data-master-tile="switch.annika_heating_enabled"') && !html.includes('<ha-switch'))
   assert.ok(html.includes('stile heat') && html.includes('Running · 1 of 2 thermostats heating'))
-  const off = el._stripHtml({ ...config, enabled: false }, state, el._texts)
-  assert.ok(off.includes('nothing is automated') && !off.includes('<ha-switch checked'))
+  const plain = el._stripHtml({ ...config, entities: {} }, state, el._texts)
+  assert.ok(plain.includes('heating season (12.0°)') && !plain.includes('data-master-tile'))
+  const off = el._stripHtml({ ...config, entities: {}, enabled: false }, state, el._texts)
+  assert.ok(off.includes('nothing is automated'))
 })
 
 test('a zone shows its target, why, what is next and the manual count', () => {
@@ -261,7 +263,7 @@ test('the settings of a thermostat are its device entities', () => {
 test('spanish', () => {
   const el = card()
   el._hass.language = 'es'
-  assert.ok(el._stripHtml(config, state, el._texts).includes('Calefacción'))
+  assert.ok(el._stripHtml({ ...config, entities: {} }, state, el._texts).includes('Calefacción'))
 })
 
 test('the day tabs follow day_mode', () => {

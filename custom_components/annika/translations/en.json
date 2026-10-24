@@ -37,6 +37,14 @@
           "idle": "Idle",
           "heating": "Heating"
         }
+      },
+      "ac_status": {
+        "state": {
+          "off": "Off",
+          "standby": "Standby",
+          "idle": "Idle",
+          "running": "Running"
+        }
       }
     }
   },
@@ -108,6 +116,30 @@
       "message": "Invalid schedule: {error}"
     },
     "heating_invalid_season": {
+      "message": "Invalid season: {error}"
+    },
+    "ac_disabled": {
+      "message": "The AC is switched off"
+    },
+    "ac_unknown_zone": {
+      "message": "Unknown zone {zone}"
+    },
+    "ac_unknown_unit": {
+      "message": "{unit} is not an AC of this zone"
+    },
+    "ac_unknown_target": {
+      "message": "Choose a zone or a unit"
+    },
+    "ac_invalid_mode": {
+      "message": "Invalid mode {mode}"
+    },
+    "ac_invalid_target": {
+      "message": "Invalid target"
+    },
+    "ac_invalid_slot": {
+      "message": "Invalid schedule: {error}"
+    },
+    "ac_invalid_season": {
       "message": "Invalid season: {error}"
     }
   }

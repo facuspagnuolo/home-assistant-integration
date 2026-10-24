@@ -18,7 +18,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN
-from .heating import DATA_HEATING, DAY_TYPES, AnnikaHeating, HeatingError
+from .heating import ALL_DAYS, DATA_HEATING, AnnikaHeating, HeatingError
 
 SERVICE_SET_HEATING_MANUAL = "set_heating_manual"
 SERVICE_SET_HEATING_AUTO = "set_heating_auto"
@@ -70,7 +70,7 @@ async def async_setup_platform(
         SERVICE_SET_HEATING_SCHEDULE,
         {
             vol.Required("zone"): cv.string,
-            vol.Required("day"): vol.In(DAY_TYPES),
+            vol.Required("day"): vol.In(ALL_DAYS),
             vol.Required("slots"): vol.All(cv.ensure_list, [dict]),
         },
         "async_set_heating_schedule",

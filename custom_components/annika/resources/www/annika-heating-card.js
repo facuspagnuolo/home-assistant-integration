@@ -20,7 +20,7 @@
 // activity.
 //
 // A dashboard that lists `entities:` instead of an `entity:` still gets the thermostat
-// tiles of annika-ac-card, as before.
+// tiles of annika-ac-tiles-card, as before.
 ;(() => {
   const CARD = 'annika-heating-card'
   const SERVICE_DOMAIN = 'annika'
@@ -277,6 +277,7 @@ button:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 
 .u { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
 .stile { display: flex; align-items: center; gap: 12px; padding: 12px 14px; --tone: var(--primary-color); }
+.master-host { display: contents; }
 .stile.click { cursor: pointer; }
 .stile .ico { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; flex: none; color: var(--tone); background: color-mix(in srgb, var(--tone) 16%, transparent); --mdc-icon-size: 22px; }
 .stile .txt { flex: 1; min-width: 0; }
@@ -308,7 +309,7 @@ button:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 
 .chart { padding: 6px 12px 0; }
 .chart svg { width: 100%; height: auto; display: block; }
 .chart-wrap { position: relative; }
-.chart-toggle { position: absolute; top: 6px; right: 16px; display: flex; gap: 6px; z-index: 1; }
+.chart-toggle { display: flex; justify-content: flex-end; gap: 6px; padding: 8px 16px 0; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 0 16px 8px; font-size: 12px; color: var(--secondary-text-color); }
 .legend i { display: inline-block; width: 14px; height: 3px; margin-right: 6px; vertical-align: middle; border-radius: 2px; }
 .tag { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding: 2px 9px; font-size: 12px; --mdc-icon-size: 13px; white-space: nowrap; background: rgba(255,255,255,.07); color: var(--secondary-text-color); font-weight: 400; }
@@ -354,7 +355,7 @@ td.act-cell { text-align: right; white-space: nowrap; }
 .dd { position: relative; display: inline-flex; align-items: center; max-width: 100%; height: 34px; padding: 0 32px 0 12px; border: 0; border-radius: 12px; background: color-mix(in srgb, var(--disabled-color) 20%, transparent); color: var(--primary-text-color); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
 .dd.empty { color: var(--secondary-text-color); }
 .dd::after { content: ''; position: absolute; top: 50%; right: 6px; width: 24px; height: 24px; margin-top: -12px; pointer-events: none; background: var(--secondary-text-color); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M7,10L12,15L17,10H7Z'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M7,10L12,15L17,10H7Z'/%3E%3C/svg%3E") center / contain no-repeat; }
-.popover { position: fixed; z-index: 10; width: 320px; max-width: calc(100vw - 24px); max-height: 60vh; overflow: auto; background: var(--card-background-color, #121415); border: 1px solid rgba(255,255,255,.12); box-shadow: 0 12px 32px rgba(0,0,0,.6); padding: 12px 14px; box-sizing: border-box; }
+.popover { position: absolute; z-index: 10; width: 320px; max-width: calc(100vw - 24px); max-height: 60vh; overflow: auto; background: var(--card-background-color, #121415); border: 1px solid rgba(255,255,255,.12); box-shadow: 0 12px 32px rgba(0,0,0,.6); padding: 12px 14px; box-sizing: border-box; }
 .pop-title { font-weight: 500; }
 .pop-sub { color: var(--secondary-text-color); font-size: 12px; margin: 2px 0 8px; }
 .pop-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid var(--divider-color); cursor: pointer; }
@@ -386,15 +387,15 @@ td.act-cell { text-align: right; white-space: nowrap; }
 
   class AnnikaHeatingCard extends HTMLElement {
     setConfig(config) {
-      // The old way: a list of climate entities, drawn by annika-ac-card.
+      // The old way: a list of climate entities, drawn by annika-ac-tiles-card.
       if (!config.entity) {
         if (!Array.isArray(config.entities) || config.entities.length === 0) {
           throw new Error(`${CARD}: "entity" is required (or a non-empty "entities" list of climate entities)`)
         }
         this._legacy = true
         if (!this._card) {
-          const AcCard = customElements.get('annika-ac-card')
-          if (!AcCard) throw new Error(`${CARD}: annika-ac-card.js is not loaded`)
+          const AcCard = customElements.get('annika-ac-tiles-card')
+          if (!AcCard) throw new Error(`${CARD}: annika-ac-tiles-card.js is not loaded`)
           this._card = new AcCard()
           this.innerHTML = ''
           this.appendChild(this._card)
@@ -446,7 +447,7 @@ td.act-cell { text-align: right; white-space: nowrap; }
         return
       }
       this._render()
-      if (this._settings) Object.values(this._tiles).forEach((el) => (el.hass = hass))
+      Object.values(this._tiles).forEach((el) => (el.hass = hass))
     }
 
     getCardSize() {
@@ -763,10 +764,13 @@ td.act-cell { text-align: right; white-space: nowrap; }
         else if (config.season.active === false) sub = fill(t.season_off, { temp })
         else sub = t.season_any
       }
-      const master = `<ha-card class="stile click ${config.enabled ? '' : 'off'}" data-master>
+      const entity = config.entities && config.entities.master
+      // The switch is Home Assistant's own tile with its toggle; until the entity exists, a plain tile says the same.
+      const master = entity
+        ? `<div class="master-host" data-master-tile="${escapeHtml(entity)}"></div>`
+        : `<ha-card class="stile ${config.enabled ? '' : 'off'}">
         <div class="ico">${this._icon('mdi:home-thermometer')}</div>
         <div class="txt"><div class="t">${escapeHtml(t.heating)}</div><div class="s">${escapeHtml(sub)}</div></div>
-        <ha-switch ${config.enabled ? 'checked' : ''} style="pointer-events:none"></ha-switch>
       </ha-card>`
       const boilers = config.boilers.map((boiler) => {
         const on = (this._stateOf(boiler.entity) || {}).state === 'on'
@@ -1018,9 +1022,12 @@ td.act-cell { text-align: right; white-space: nowrap; }
       const anchor = this.querySelector(`[data-slot-${this._pop.kind === 'rooms' ? 'rooms' : this._pop.add ? 'addcond' : 'sensors'}="${this._pop.slot}"]`)
         || this.querySelector(`[data-slot-addcond="${this._pop.slot}"]`) || this.querySelector(`[data-slot-sensors="${this._pop.slot}"]`)
       if (!anchor || !anchor.getBoundingClientRect) return
+      // Placed inside the card, not on the window: a card with containment makes `fixed` relative to itself.
+      const host = this.querySelector('.annika-heating')
       const box = anchor.getBoundingClientRect()
-      pop.style.left = `${Math.max(12, Math.min(box.left, window.innerWidth - 336))}px`
-      pop.style.top = `${box.bottom + 6}px`
+      const area = host.getBoundingClientRect()
+      pop.style.left = `${Math.max(0, Math.min(box.left - area.left, area.width - pop.offsetWidth))}px`
+      pop.style.top = `${box.bottom - area.top + 6}px`
     }
 
     // --- editing a schedule -----------------------------------------------------------
@@ -1193,6 +1200,27 @@ td.act-cell { text-align: right; white-space: nowrap; }
       }
     }
 
+    async _mountMaster() {
+      const host = this.querySelector('[data-master-tile]')
+      if (!host || !window.loadCardHelpers) return
+      const entity = host.dataset.masterTile
+      try {
+        const helpers = await window.loadCardHelpers()
+        const key = `master:${entity}`
+        if (!this._tiles[key]) {
+          this._tiles[key] = await helpers.createCardElement(
+            annika().tileConfig({ entity, name: this._texts.heating, icon: 'mdi:home-thermometer', color: 'primary' }, { features: [{ type: 'toggle' }], features_position: 'inline' }),
+          )
+        }
+        const tile = this._tiles[key]
+        tile.hass = this._hass
+        const current = this.querySelector('[data-master-tile]')
+        if (current) current.replaceChildren(tile)
+      } catch (error) {
+        // The strip keeps its other tiles.
+      }
+    }
+
     _bodyElement() {
       if (!this._body) {
         this._body = document.createElement('div')
@@ -1235,7 +1263,7 @@ td.act-cell { text-align: right; white-space: nowrap; }
       this._bodyElement().innerHTML = `
         <style>
           annika-heating-card { display: block; container-type: inline-size; }
-          .annika-heating { display: block; }
+          .annika-heating { display: block; position: relative; }
           ${(window.Annika && window.Annika.CHECKBOX_CSS) || ''}
           ${(window.Annika && window.Annika.SELECT_CSS) || ''}
           ${STYLE}
@@ -1249,6 +1277,7 @@ td.act-cell { text-align: right; white-space: nowrap; }
       this._bind(config)
       this._placePopover()
       if (this._settings) this._mountSettings()
+      else this._mountMaster()
       this._headings(this)
       requestAnimationFrame(() => { this.style.minHeight = '' })
     }
@@ -1308,10 +1337,6 @@ td.act-cell { text-align: right; white-space: nowrap; }
         this.querySelectorAll(selector).forEach((el) => el.addEventListener(event, (e) => handler(el, e)))
       const split = (value) => value.split('|')
 
-      on('[data-master]', 'click', () => {
-        const entity = config.entities && config.entities.master
-        if (entity) this._hass.callService('switch', config.enabled ? 'turn_off' : 'turn_on', { entity_id: entity })
-      })
       on('[data-zone-step]', 'click', (el) => {
         const [zone, direction] = split(el.dataset.zoneStep)
         this._holdZone(zone, Number(direction))
@@ -1398,7 +1423,7 @@ td.act-cell { text-align: right; white-space: nowrap; }
   }
 
   // Declared, not registered: annika-common.js registers once its helpers exist.
-  ;(window.AnnikaCards ||= []).push([CARD, AnnikaHeatingCard, ['annika-ac-card']])
+  ;(window.AnnikaCards ||= []).push([CARD, AnnikaHeatingCard, ['annika-ac-tiles-card']])
 
   window.customCards = window.customCards || []
   window.customCards.push({

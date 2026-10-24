@@ -4,8 +4,7 @@
       heating:
         name: Annika Heating
         weather: weather.forecast_home          # optional: the heating season follows it
-        workday: binary_sensor.today_working_day  # optional: tells workdays from the rest (default Mon-Fri)
-        day_mode: sensor                        # optional: sensor | weekend | days (see below)
+        day_mode: binary_sensor.today_working_day  # a sensor (on: workday), weekend or days; see below
         season:                                 # optional, and edited from the card
           on_below: 14                          # heating starts when the forecast stays below this...
           off_above: 18                         # ...and stops when it stays above this...
@@ -31,11 +30,10 @@
               non_workday:
                 - {time: "05:30", name: Morning, target: 20}
 
-Telling the days apart (day_mode): `sensor` has two schedules, workday and non_workday, and
-the sensor above says which one today is (Monday to Friday when there is none or it is
-unavailable); `weekend` has the same two but Monday-Friday against the weekend, whatever the
-sensor says; `days` has a schedule for each day of the week (monday ... sunday). Without
-day_mode it is `sensor` when a workday sensor is given and `weekend` when not.
+Telling the days apart (day_mode): a sensor has two schedules, workday and non_workday, and
+the sensor (on: workday) says which one today is (Monday to Friday when it is unavailable);
+`weekend` has the same two but Monday-Friday against the weekend; `days` has a schedule for
+each day of the week (monday ... sunday). Without day_mode it is `weekend`.
 
 What decides a thermostat's target, the first that applies:
 
@@ -180,7 +178,8 @@ def _entity_of(item: Any) -> str:
 
 
 def _mode_of(config: dict) -> str:
-    return config.get("day_mode") or ("sensor" if config.get("workday") else "weekend")
+    mode = config.get("day_mode") or "weekend"
+    return mode if mode in DAY_MODES else "sensor"
 
 
 def _check_references(config: dict) -> dict:
@@ -220,10 +219,9 @@ HEATING_SCHEMA = vol.All(
         {
             vol.Optional("name", default="Annika Heating"): cv.string,
             vol.Optional("weather"): _WEATHER,
-            vol.Optional("workday"): cv.entity_id,
-            # sensor: the workday sensor decides (Mon-Fri without one); weekend: Mon-Fri against
-            # Sat-Sun whatever the sensor says; days: a schedule for each day of the week.
-            vol.Optional("day_mode"): vol.In(DAY_MODES),
+            # An entity (on: workday, off: not), weekend (Mon-Fri against Sat-Sun) or days (one
+            # schedule per day of the week).
+            vol.Optional("day_mode"): vol.Any(vol.In(("weekend", "days")), cv.entity_id),
             # Whether a change made on a thermostat itself is kept as a manual one.
             vol.Optional("adopt_manual", default=True): cv.boolean,
             vol.Optional("season", default={}): SEASON_SCHEMA,
@@ -322,7 +320,7 @@ class AnnikaHeating:
         self.hass = hass
         self.name: str = config["name"]
         self.weather: str | None = config.get("weather")
-        self.workday_entity: str | None = config.get("workday")
+        self.workday_entity: str | None = config["day_mode"] if _mode_of(config) == "sensor" else None
         self.day_mode: str = _mode_of(config)
         self.day_keys: tuple[str, ...] = day_keys(self.day_mode)
         self.adopt: bool = config["adopt_manual"]

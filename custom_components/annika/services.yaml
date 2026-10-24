@@ -357,7 +357,7 @@ set_heating_manual:
     zone: {name: Zone, description: Every thermostat of the zone when no thermostats are given., selector: {text: null}}
     thermostats: {name: Thermostats, selector: {entity: {multiple: true, domain: climate}}}
     target: {name: Target, selector: {number: {min: 5, max: 35, step: 0.5, unit_of_measurement: "°"}}}
-    off: {name: Off, description: Turn them off instead of holding a target., selector: {boolean: null}}
+    "off": {name: Off, description: Turn them off instead of holding a target., selector: {boolean: null}}
 set_heating_auto:
   name: Back to Auto
   description: Put a zone, some thermostats or all of them back to what the schedule says.
@@ -377,7 +377,7 @@ set_heating_schedule:
       domain: sensor
   fields:
     zone: {name: Zone, required: true, selector: {text: null}}
-    day: {name: Day type, required: true, selector: {select: {options: [workday, non_workday]}}}
+    day: {name: Day type, required: true, selector: {select: {options: [workday, non_workday, monday, tuesday, wednesday, thursday, friday, saturday, sunday]}}}
     slots: {name: Slots, required: true, description: "A list of {time, name, target, thermostats, motion: {sensors, minutes}}.", selector: {object: null}}
 set_heating_season:
   name: Set the heating season
@@ -390,4 +390,52 @@ set_heating_season:
     enabled: {name: Follow the weather, selector: {boolean: null}}
     on_below: {name: Starts below, selector: {number: {min: -30, max: 50, step: 0.5}}}
     off_above: {name: Ends above, selector: {number: {min: -30, max: 50, step: 0.5}}}
+    hours: {name: For (hours), selector: {number: {min: 1, max: 72}}}
+set_ac_manual:
+  name: Hold an AC setting
+  description: Set the mode, target, fan or swing of a zone or of some units, and leave them alone until they are put back to Auto.
+  target:
+    entity:
+      integration: annika
+      domain: sensor
+  fields:
+    zone: {name: Zone, description: Every unit of the zone when no units are given., selector: {text: null}}
+    units: {name: Units, selector: {entity: {multiple: true, domain: climate}}}
+    mode: {name: Mode, selector: {select: {options: ["off", cool, heat, dry, fan_only, auto, heat_cool]}}}
+    target: {name: Target, selector: {number: {min: 16, max: 32, step: 0.5, unit_of_measurement: "°"}}}
+    fan: {name: Fan, selector: {text: null}}
+    swing: {name: Vertical swing, selector: {text: null}}
+    swing_horizontal: {name: Horizontal swing, selector: {text: null}}
+set_ac_auto:
+  name: Back to Auto
+  description: Put a zone, some units or all of them back to what the schedule says.
+  target:
+    entity:
+      integration: annika
+      domain: sensor
+  fields:
+    zone: {name: Zone, selector: {text: null}}
+    units: {name: Units, selector: {entity: {multiple: true, domain: climate}}}
+set_ac_schedule:
+  name: Set an AC schedule
+  description: Replace the slots of a zone for a type of day.
+  target:
+    entity:
+      integration: annika
+      domain: sensor
+  fields:
+    zone: {name: Zone, required: true, selector: {text: null}}
+    day: {name: Day type, required: true, selector: {select: {options: [workday, non_workday, monday, tuesday, wednesday, thursday, friday, saturday, sunday]}}}
+    slots: {name: Slots, required: true, description: "A list of {time, name, mode, target, fan, units}.", selector: {object: null}}
+set_ac_season:
+  name: Set the cooling season
+  description: When the AC is let on and when it is turned off.
+  target:
+    entity:
+      integration: annika
+      domain: sensor
+  fields:
+    enabled: {name: Follow the weather, selector: {boolean: null}}
+    on_above: {name: On above, selector: {number: {min: -30, max: 60, step: 0.5}}}
+    off_below: {name: Off below, selector: {number: {min: -30, max: 60, step: 0.5}}}
     hours: {name: For (hours), selector: {number: {min: 1, max: 72}}}

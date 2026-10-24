@@ -37,6 +37,14 @@
           "idle": "En reposo",
           "heating": "Calentando"
         }
+      },
+      "ac_status": {
+        "state": {
+          "off": "Apagado",
+          "standby": "En espera",
+          "idle": "En reposo",
+          "running": "Funcionando"
+        }
       }
     }
   },
@@ -108,6 +116,30 @@
       "message": "Horario inválido: {error}"
     },
     "heating_invalid_season": {
+      "message": "Temporada inválida: {error}"
+    },
+    "ac_disabled": {
+      "message": "El AC está apagado"
+    },
+    "ac_unknown_zone": {
+      "message": "Zona desconocida {zone}"
+    },
+    "ac_unknown_unit": {
+      "message": "{unit} no es un AC de esta zona"
+    },
+    "ac_unknown_target": {
+      "message": "Elegí una zona o un equipo"
+    },
+    "ac_invalid_mode": {
+      "message": "Modo inválido {mode}"
+    },
+    "ac_invalid_target": {
+      "message": "Temperatura inválida"
+    },
+    "ac_invalid_slot": {
+      "message": "Horario inválido: {error}"
+    },
+    "ac_invalid_season": {
       "message": "Temporada inválida: {error}"
     }
   }

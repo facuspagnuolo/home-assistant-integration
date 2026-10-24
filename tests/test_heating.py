@@ -36,7 +36,7 @@ WORKDAY_SLOTS = [
 def config(**overrides):
     values = {
         "weather": WEATHER,
-        "workday": WORKDAY,
+        "day_mode": WORKDAY,
         "boilers": [{"name": "Boiler", "entity": BOILER}],
         "zones": [
             {
@@ -553,12 +553,16 @@ async def test_integration_creates_the_entities_and_services(hass, freezer, utc,
 # --- telling the days apart -----------------------------------------------------------------
 
 
-def test_day_mode_defaults_to_the_sensor_only_when_there_is_one():
+def test_day_mode_is_a_sensor_weekend_or_days():
     from custom_components.annika.heating import _mode_of
 
     assert _mode_of(config()) == "sensor"
+    assert config()["day_mode"] == WORKDAY
     assert _mode_of({"zones": []}) == "weekend"
+    assert _mode_of(config(day_mode="weekend")) == "weekend"
     assert _mode_of(config(day_mode="days", zones=[{"name": "A", "thermostats": [KITCHEN]}])) == "days"
+    with pytest.raises(vol.Invalid):
+        config(day_mode="every other day")
 
 
 async def test_weekend_mode_ignores_the_sensor(hass, freezer, utc, calls):
@@ -569,7 +573,7 @@ async def test_weekend_mode_ignores_the_sensor(hass, freezer, utc, calls):
 
 
 async def test_sensor_mode_without_a_sensor_uses_the_week(hass, freezer, utc, calls):
-    raw = {k: v for k, v in config().items() if k != "workday"}
+    raw = {k: v for k, v in config().items() if k != "day_mode"}
     heating = AnnikaHeating(hass, HEATING_SCHEMA({**raw}))
     assert heating.day_mode == "weekend"
 
