@@ -35,6 +35,7 @@ from .irrigation import (
     UNIQUE_ENABLED,
     UNIQUE_MANUAL_MINUTES,
     UNIQUE_NEXT_START,
+    UNIQUE_NOTIFY,
     UNIQUE_RAIN_DELAY_AFTER_RAIN,
     UNIQUE_RUN,
     UNIQUE_START_MODE,
@@ -125,7 +126,7 @@ class IrrigationEnabledSwitch(_IrrigationEntity, SwitchEntity, RestoreEntity):
 
     _attr_name = "Irrigation Schedule"
     _attr_unique_id = UNIQUE_ENABLED
-    _attr_icon = "mdi:sprinkler-variant"
+    _attr_icon = "mdi:calendar-clock"
 
     @property
     def is_on(self) -> bool:
@@ -145,6 +146,36 @@ class IrrigationEnabledSwitch(_IrrigationEntity, SwitchEntity, RestoreEntity):
     async def async_turn_off(self, **kwargs: Any) -> None:
         self._irrigation.settings.enabled = False
         self._irrigation.settings_changed()
+
+
+class IrrigationNotifySwitch(_IrrigationEntity, SwitchEntity, RestoreEntity):
+    """Whether the runs send an Annika event when they start and end."""
+
+    _attr_name = "Irrigation Notifications"
+    _attr_unique_id = UNIQUE_NOTIFY
+
+    @property
+    def is_on(self) -> bool:
+        return self._irrigation.settings.notify is not False
+
+    @property
+    def icon(self) -> str:
+        return "mdi:bell-outline" if self.is_on else "mdi:bell-off-outline"
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        self._irrigation.settings.notify = last_state is None or last_state.state == STATE_ON
+        await self._listen()
+        self._irrigation.notify()
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        self._irrigation.settings.notify = True
+        self._irrigation.notify()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        self._irrigation.settings.notify = False
+        self._irrigation.notify()
 
 
 class IrrigationDaySwitch(_IrrigationEntity, SwitchEntity, RestoreEntity):
@@ -469,6 +500,7 @@ class IrrigationStatusSensor(_IrrigationEntity, SensorEntity):
             ],
             "entities": {
                 "enabled": entity("switch", UNIQUE_ENABLED),
+                "notify": entity("switch", UNIQUE_NOTIFY) if irrigation.notify_view else None,
                 "start_mode": entity("select", UNIQUE_START_MODE),
                 "sunrise_offset": entity("number", UNIQUE_SUNRISE_OFFSET),
                 "start_time": entity("time", UNIQUE_START_TIME),
@@ -516,8 +548,9 @@ def sensors(irrigation: AnnikaIrrigation) -> list[SensorEntity]:
     return [IrrigationStatusSensor(irrigation), IrrigationNextStartSensor(irrigation)]
 
 def switches(irrigation: AnnikaIrrigation) -> list[SwitchEntity]:
+    notify = [IrrigationNotifySwitch(irrigation)] if irrigation.notify_view else []
     return (
-        [IrrigationEnabledSwitch(irrigation)]
+        [IrrigationEnabledSwitch(irrigation), *notify]
         + [
             IrrigationDaySwitch(irrigation, season, weekday)
             for season in irrigation.seasons

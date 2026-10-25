@@ -10,7 +10,8 @@ the structure — seasons, groups and zones — is a deployment decision:
       irrigation:
         rain_sensor: binary_sensor.rain_bird_controller_rainsensor
         rain_delay: number.rain_bird_controller_rain_delay
-        notify_view: irrigation        # optional: Annika events start/end
+        notify_view: irrigation        # optional: Annika events start/end; the
+                                       # card's Notifications tile turns them on or off
         pause_seconds: 20              # between zones
         start:
           sunrise_offset: "-02:00"     # or `time: "05:30"`
@@ -265,6 +266,7 @@ class IrrigationSettings:
     """What the person edits. `None` until the owning entity restored it."""
 
     enabled: bool | None = None
+    notify: bool | None = None
     days: dict[tuple[str, str], bool | None] = field(default_factory=dict)
     minutes: dict[tuple[str, str], float | None] = field(default_factory=dict)
     start_mode: str | None = None
@@ -826,7 +828,7 @@ class AnnikaIrrigation:
         )
 
     async def _send_event(self, title: str, message: str) -> None:
-        if not self.notify_view:
+        if not self.notify_view or self.settings.notify is False:
             return
         try:
             await AnnikaEventClient(self.hass).async_send(
@@ -905,6 +907,7 @@ def _as_float(value: str | None) -> float:
 # them through the status sensor's attributes, so none is named in YAML.
 UNIQUE_STATUS = "annika_irrigation"
 UNIQUE_ENABLED = "annika_irrigation_enabled"
+UNIQUE_NOTIFY = "annika_irrigation_notify"
 UNIQUE_START_MODE = "annika_irrigation_start_mode"
 UNIQUE_SUNRISE_OFFSET = "annika_irrigation_sunrise_offset"
 UNIQUE_START_TIME = "annika_irrigation_start_time"

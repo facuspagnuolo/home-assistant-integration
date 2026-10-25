@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import voluptuous as vol
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.discovery import async_load_platform
@@ -646,3 +647,39 @@ async def test_a_group_a_camera_names_exists_even_when_the_yaml_does_not_list_it
     assert [g.name for g in cameras.groups] == ["Entrance"]
     await detect(hass, PERSON)
     assert cameras.clips == [], "a group nobody configured starts at off"
+
+
+# --- what the strip under a camera shows -----------------------------------------
+
+
+async def test_features_start_as_hd_sensors_settings(hass, tmp_path, services, sent):
+    cameras = await start(hass, tmp_path)
+    attrs = cameras.attributes()["config"]
+    assert [camera["features"] for camera in attrs["cameras"]] == [["hd", "sensors", "settings"]] * 2
+    # The speaker is not muted while talking: both are the person's to turn on.
+    assert attrs["talk"] == {"mute_speaker": False, "auto_off": True, "auto_off_seconds": 60}
+
+
+async def test_a_camera_can_have_its_own_features_in_its_own_order(hass, tmp_path, services, sent):
+    cameras = await start(
+        hass,
+        tmp_path,
+        features=["settings"],
+        talk={"auto_off_seconds": 90},
+        cameras=[
+            {"name": "Front", "entity": "camera.front", "person": PERSON,
+             "features": ["sensors", "audio", "mic", "audio"], "rules": {"person": "record"}},
+            {"name": "Back", "entity": "camera.back", "motion": MOTION, "rules": {"motion": "record"}},
+        ],
+    )
+    attrs = cameras.attributes()["config"]
+    assert [camera["features"] for camera in attrs["cameras"]] == [["sensors", "audio", "mic"], ["settings"]]
+    assert attrs["talk"]["auto_off_seconds"] == 90
+
+
+def test_an_unknown_feature_is_refused(hass, tmp_path):
+    with pytest.raises(vol.Invalid):
+        config(hass, tmp_path, features=["hd", "zoom"])
+    with pytest.raises(vol.Invalid):
+        config(hass, tmp_path, talk={"auto_off_seconds": 5})
+    assert config(hass, tmp_path, features=[])["features"] == []

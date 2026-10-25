@@ -480,3 +480,20 @@ async def test_recording_services(hass, tmp_path, services, sent):
         await hass.services.async_call(DOMAIN, "delete_doorbell_clip", {"entity_id": entity, "clip_id": "nope"}, blocking=True)
     with pytest.raises((HomeAssistantError, vol.Invalid)):
         await hass.services.async_call(DOMAIN, "set_doorbell_recording", {"entity_id": entity, "keep_days": 0}, blocking=True)
+
+
+async def test_features_start_as_all_four_and_a_doorbell_can_have_its_own(hass, services, sent):
+    doorbells = await start(
+        hass,
+        features=["settings", "sensors"],
+        doorbells=[
+            {"name": "Front door", "entity": "camera.front", "visitor": VISITOR, "features": ["sensors", "mic", "mic"]},
+            {"name": "Back door", "entity": "camera.back", "visitor": "binary_sensor.back_visitor"},
+        ],
+    )
+    listed = doorbells.attributes()["config"]["doorbells"]
+    assert [doorbell["features"] for doorbell in listed] == [["sensors", "mic"], ["settings", "sensors"]]
+    assert config()["features"] == ["sensors", "audio", "mic", "settings"]  # hd is there to ask for
+    with pytest.raises(vol.Invalid):
+        config(features=["zoom"])
+    assert config(features=["hd", "sensors"])["features"] == ["hd", "sensors"]

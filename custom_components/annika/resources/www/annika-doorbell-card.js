@@ -7,6 +7,10 @@
 //   name: Doorbell              # optional
 //   language: es                # optional; by default the Home Assistant language
 //
+// What shows under each tile is set by `features` (see doorbells.py): `hd` (the clear stream
+// of the camera, when it has one), `sensors`, `audio` (speaker), `mic` and `settings` (the
+// gear), in the order listed; all but `hd` by default.
+//
 // Each doorbell is a tile like a camera's: the live view, its name, the
 // detection icons, the speaker and microphone buttons and a gear. The gear opens
 // the settings of that doorbell's device (what the camera's gear shows). Who is
@@ -19,10 +23,12 @@
 //
 // Talking: the live view is not Home Assistant's picture card but a WebRTC
 // connection of its own, through Home Assistant's `camera/webrtc/offer` (the
-// same one its own card uses), that also offers the doorbell an audio track to
-// send. The speaker and the microphone both start off:
+// same one its own card uses), with the picture only. The sound is a second
+// connection, opened the first time the speaker or the microphone is turned on
+// (a few seconds) and closed 30 s after both are off again, so until then no
+// sound is received or sent. The speaker and the microphone both start off:
 //
-//   speaker     the video's sound, off until it is asked for;
+//   speaker     the doorbell's sound, off until it is asked for;
 //   microphone  nothing is captured until the first time it is turned on (that is
 //               when the browser asks), and turning it off releases it, so the
 //               browser's recording indicator goes away with it.
@@ -59,24 +65,14 @@
       mute_speaker: 'Mute the speaker while talking',
       auto_off: 'Turn the microphone off after',
       sec: 'sec',
-      speaker: 'Speaker',
-      speaker_on: 'Mute the speaker',
-      speaker_off: 'Listen',
-      speaker_locked: 'The speaker is muted while talking',
-      mic: 'Microphone',
-      mic_on: 'Mute the microphone',
-      mic_off: 'Talk',
-      connecting: 'Connecting…',
-      cannot_talk: 'This doorbell cannot be talked to',
-      mic_denied: 'The microphone is not allowed in this browser',
-      mic_insecure: 'The microphone needs a secure (HTTPS) connection',
-      mic_error: 'The microphone could not be started',
       visitor: 'Visitor',
       person: 'Person',
       vehicle: 'Vehicle',
       animal: 'Animal',
       motion: 'Motion',
       settings: 'Settings',
+      hd: 'HD',
+      hd_hint: 'Watch in high definition (uses more resources)',
       back: 'Back',
       no_settings: 'This doorbell has no settings to show',
       confirm_restart: 'Restart this device?',
@@ -118,24 +114,14 @@
       mute_speaker: 'Silenciar el parlante mientras se habla',
       auto_off: 'Apagar el micrófono después de',
       sec: 'seg',
-      speaker: 'Parlante',
-      speaker_on: 'Silenciar el parlante',
-      speaker_off: 'Escuchar',
-      speaker_locked: 'El parlante se silencia mientras se habla',
-      mic: 'Micrófono',
-      mic_on: 'Silenciar el micrófono',
-      mic_off: 'Hablar',
-      connecting: 'Conectando…',
-      cannot_talk: 'No se puede hablar por este timbre',
-      mic_denied: 'El micrófono no está permitido en este navegador',
-      mic_insecure: 'El micrófono necesita una conexión segura (HTTPS)',
-      mic_error: 'No se pudo iniciar el micrófono',
       visitor: 'Visita',
       person: 'Persona',
       vehicle: 'Vehículo',
       animal: 'Animal',
       motion: 'Movimiento',
       settings: 'Ajustes',
+      hd: 'HD',
+      hd_hint: 'Ver en alta definición (usa más recursos)',
       back: 'Volver',
       no_settings: 'Este timbre no tiene ajustes para mostrar',
       confirm_restart: '¿Reiniciar este dispositivo?',
@@ -159,6 +145,7 @@
   const TARGETS = ['devices', 'users']
   const WHEN = ['at_home', 'away']
   const KINDS = ['person', 'vehicle', 'animal', 'motion']
+  const DEFAULT_FEATURES = ['sensors', 'audio', 'mic', 'settings']
   const ICONS = { visitor: 'mdi:bell-ring', person: 'mdi:account', vehicle: 'mdi:car', animal: 'mdi:paw', motion: 'mdi:motion-sensor' }
   // What the settings of a doorbell show, in this order; the rest follows.
   const SETTING_DOMAINS = ['switch', 'light', 'siren', 'select', 'number', 'button', 'update', 'binary_sensor', 'sensor']
@@ -166,10 +153,6 @@
   const HIDDEN_DOMAINS = ['camera', 'image']
   // The tiles' colour, the one the lights, covers and cameras cards use for theirs.
   const SETTINGS_COLOR = 'primary'
-  // How long the browser has to gather its network candidates before the offer goes out.
-  const GATHER_MS = 2000
-  // A connection that drops is given this long to come back before the live view is given up.
-  const DISCONNECTED_MS = 5000
 
   const escapeHtml = (value) =>
     String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
@@ -179,203 +162,9 @@
   // A dropdown, drawn like the irrigation card's (see SELECT_CSS in annika-common.js).
   const selectBox = (select) => `<span class="annika-select">${select}</span>`
 
-  const gathered = (pc, ms) =>
-    new Promise((resolve) => {
-      if (pc.iceGatheringState === 'complete') return resolve()
-      const finish = () => {
-        pc.removeEventListener('icegatheringstatechange', check)
-        clearTimeout(timer)
-        resolve()
-      }
-      const check = () => {
-        if (pc.iceGatheringState === 'complete') finish()
-      }
-      const timer = setTimeout(finish, ms)
-      pc.addEventListener('icegatheringstatechange', check)
-    })
-
-  // One doorbell's WebRTC connection: the video and sound it sends, and an audio
-  // track of our own for the microphone, which stays empty until it is asked for.
-  class Player {
-    constructor(hass, entity) {
-      this.hass = hass
-      this.entity = entity
-      this.failed = false
-      this.onfail = null
-      this._generation = 0
-      this._pc = null
-      this._audio = null
-      this._unsubscribe = null
-      this._mic = null
-      this._video = null
-    }
-
-    // Muted and playing inline: the speaker is something the person turns on.
-    get video() {
-      if (!this._video) {
-        const video = document.createElement('video')
-        video.autoplay = true
-        video.muted = true
-        video.playsInline = true
-        video.setAttribute('playsinline', '')
-        video.className = 'annika-doorbell-video'
-        this._video = video
-      }
-      return this._video
-    }
-
-    // Whether the doorbell agreed to receive what the microphone sends.
-    get talkSupported() {
-      const direction = this._audio && this._audio.currentDirection
-      return !!direction && direction.startsWith('send')
-    }
-
-    get micOn() {
-      return !!this._mic
-    }
-
-    async connect() {
-      this.close()
-      this.failed = false
-      const generation = ++this._generation
-      let config = {}
-      try {
-        config = await this.hass.callWS({ type: 'camera/webrtc/get_client_config', entity_id: this.entity })
-      } catch (err) {
-        // Home Assistant's defaults.
-      }
-      if (generation !== this._generation) return
-      const pc = new RTCPeerConnection((config && config.configuration) || {})
-      this._pc = pc
-      pc.addTransceiver('video', { direction: 'recvonly' })
-      // sendrecv: the doorbell's own sound comes in, and the microphone's goes out
-      // once there is a track to put on it.
-      this._audio = pc.addTransceiver('audio', { direction: 'sendrecv' })
-      pc.createDataChannel((config && config.dataChannel) || 'dc')
-      const stream = new MediaStream()
-      pc.addEventListener('track', (event) => {
-        stream.addTrack(event.track)
-        const video = this.video
-        video.srcObject = stream
-        const playing = video.play && video.play()
-        if (playing && playing.catch) playing.catch(() => {})
-      })
-      let timer = null
-      pc.addEventListener('connectionstatechange', () => {
-        if (generation !== this._generation) return
-        clearTimeout(timer)
-        if (pc.connectionState === 'failed' || pc.connectionState === 'closed') this._fail()
-        else if (pc.connectionState === 'disconnected') timer = setTimeout(() => this._fail(), DISCONNECTED_MS)
-      })
-      try {
-        await pc.setLocalDescription(await pc.createOffer())
-        await gathered(pc, GATHER_MS)
-        if (generation !== this._generation) return
-        const unsubscribe = await this.hass.connection.subscribeMessage(
-          (message) => this._message(pc, generation, message),
-          { type: 'camera/webrtc/offer', entity_id: this.entity, offer: pc.localDescription.sdp }
-        )
-        if (generation !== this._generation) unsubscribe()
-        else this._unsubscribe = unsubscribe
-      } catch (err) {
-        if (generation === this._generation) this._fail()
-      }
-    }
-
-    _message(pc, generation, message) {
-      if (generation !== this._generation) return
-      if (message.type === 'answer') {
-        pc.setRemoteDescription({ type: 'answer', sdp: message.answer }).catch(() => this._fail())
-      } else if (message.type === 'candidate') {
-        pc.addIceCandidate(message.candidate).catch(() => {})
-      } else if (message.type === 'error') {
-        this._fail()
-      }
-    }
-
-    _fail() {
-      if (this.failed) return
-      this.failed = true
-      this.close()
-      if (this.onfail) this.onfail()
-    }
-
-    setMuted(muted) {
-      const video = this.video
-      video.muted = muted
-      if (!muted && video.play) {
-        const playing = video.play()
-        if (playing && playing.catch) playing.catch(() => {})
-      }
-    }
-
-    // The browser asks for the microphone here, the first time.
-    async startMic() {
-      if (this._mic) return
-      const devices = typeof navigator !== 'undefined' && navigator.mediaDevices
-      if (!devices || !devices.getUserMedia || (typeof isSecureContext !== 'undefined' && isSecureContext === false)) {
-        const error = new Error('insecure')
-        error.name = 'InsecureContext'
-        throw error
-      }
-      if (!this.talkSupported) {
-        const error = new Error('cannot talk')
-        error.name = 'CannotTalk'
-        throw error
-      }
-      const stream = await devices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      })
-      const track = stream.getAudioTracks()[0]
-      if (!this._audio || !this.talkSupported) {
-        track.stop()
-        const error = new Error('cannot talk')
-        error.name = 'CannotTalk'
-        throw error
-      }
-      await this._audio.sender.replaceTrack(track)
-      this._mic = track
-    }
-
-    // Stopping the track is what turns the browser's recording indicator off.
-    async stopMic() {
-      const track = this._mic
-      this._mic = null
-      if (track) track.stop()
-      if (this._audio) {
-        try {
-          await this._audio.sender.replaceTrack(null)
-        } catch (err) {
-          // The connection is already gone.
-        }
-      }
-    }
-
-    close() {
-      this._generation += 1
-      if (this._unsubscribe) {
-        try {
-          this._unsubscribe()
-        } catch (err) {
-          // Already unsubscribed.
-        }
-        this._unsubscribe = null
-      }
-      const track = this._mic
-      this._mic = null
-      if (track) track.stop()
-      if (this._pc) {
-        this._pc.close()
-        this._pc = null
-      }
-      this._audio = null
-      if (this._video) this._video.srcObject = null
-    }
-  }
-
   class AnnikaDoorbellCard extends HTMLElement {
     static get Player() {
-      return Player
+      return window.Annika.Player
     }
 
     setConfig(config) {
@@ -384,7 +173,9 @@
       this._structure = ''
       this._players = {}
       this._fallback = {}
-      this._talk = {}
+      // The doorbells the person asked to see in HD: none until they ask.
+      this._hd = new Set()
+      this._talkControls = null
       // The doorbell whose settings are open (replaces the card's content), or null.
       this._settings = null
       this._tiles = {}
@@ -394,7 +185,7 @@
 
     connectedCallback() {
       this._onHidden = () => {
-        if (typeof document !== 'undefined' && document.hidden) this._allMicsOff()
+        if (typeof document !== 'undefined' && document.hidden) this._talk.allOff()
       }
       if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this._onHidden)
       // Coming back after leaving: the live views were closed, draw them again.
@@ -404,7 +195,7 @@
 
     disconnectedCallback() {
       if (typeof document !== 'undefined' && this._onHidden) document.removeEventListener('visibilitychange', this._onHidden)
-      this._allMicsOff()
+      this._talk.allOff()
       if (this._playing) {
         this._playing = null
         this._syncPlayer()
@@ -420,7 +211,7 @@
       this._updateNow()
       if (this._settings) Object.values(this._tiles).forEach((el) => (el.hass = hass))
       Object.values(this._players).forEach((player) => (player.hass = hass))
-      Object.values(this._fallback).forEach((el) => (el.hass = hass))
+      Object.values(this._fallback).forEach((fallback) => (fallback.element.hass = hass))
     }
 
     getCardSize() {
@@ -441,7 +232,8 @@
         ? window.Annika.language(this._hass, this._config)
         : (this._config.language || (this._hass && this._hass.language) || 'en')
       const base = String(lang).toLowerCase().split('-')[0]
-      return { ...TEXTS.en, ...(TEXTS[base] || {}) }
+      const talk = (window.Annika && window.Annika.TALK_TEXTS) || {}
+      return { ...TEXTS.en, ...(talk.en || {}), ...(TEXTS[base] || {}), ...(talk[base] || {}) }
     }
 
     get _stateObj() {
@@ -501,120 +293,17 @@
 
     // --- talking ------------------------------------------------------------
 
-    _talkState(id) {
-      return (this._talk[id] ||= { speaker: false, mic: 'off', message: '', timer: null })
+    get _talk() {
+      return (this._talkControls ||= new window.Annika.TalkControls(this, {
+        players: () => this._players,
+        settings: () => this._talkSettings,
+        texts: () => this._texts,
+      }))
     }
 
     get _talkSettings() {
       const stateObj = this._stateObj
       return (stateObj && stateObj.attributes.config && stateObj.attributes.config.talk) || {}
-    }
-
-    // The sound plays when it was asked for, unless the microphone is on and the speaker is
-    // set to stay quiet then (the doorbell's microphone would hear its own speaker).
-    _speakerLocked(id) {
-      return this._talkState(id).mic === 'on' && this._talkSettings.mute_speaker !== false
-    }
-
-    _speakerAudible(id) {
-      return this._talkState(id).speaker && !this._speakerLocked(id)
-    }
-
-    _applySpeaker(id) {
-      const player = this._players[id]
-      if (player) player.setMuted(!this._speakerAudible(id))
-    }
-
-    _toggleSpeaker(id) {
-      if (this._speakerLocked(id)) return
-      const talk = this._talkState(id)
-      talk.speaker = !talk.speaker
-      this._applySpeaker(id)
-      this._syncTalk(id)
-    }
-
-    async _toggleMic(id) {
-      const talk = this._talkState(id)
-      if (talk.mic === 'connecting') return
-      if (talk.mic === 'on') return this._micOff(id)
-      const player = this._players[id]
-      talk.mic = 'connecting'
-      talk.message = ''
-      this._syncTalk(id)
-      try {
-        if (!player || player.failed) {
-          const error = new Error('cannot talk')
-          error.name = 'CannotTalk'
-          throw error
-        }
-        await player.startMic()
-      } catch (error) {
-        talk.mic = 'off'
-        talk.message = this._micError(error)
-        this._syncTalk(id)
-        return
-      }
-      talk.mic = 'on'
-      this._applySpeaker(id)
-      const settings = this._talkSettings
-      if (settings.auto_off !== false) {
-        talk.timer = setTimeout(() => this._micOff(id), (settings.auto_off_seconds || 60) * 1000)
-      }
-      this._syncTalk(id)
-    }
-
-    async _micOff(id) {
-      const talk = this._talkState(id)
-      clearTimeout(talk.timer)
-      talk.timer = null
-      const player = this._players[id]
-      if (player) await player.stopMic()
-      talk.mic = 'off'
-      this._applySpeaker(id)
-      this._syncTalk(id)
-    }
-
-    _allMicsOff() {
-      Object.keys(this._talk || {}).forEach((id) => {
-        if (this._talk[id].mic !== 'off') this._micOff(id)
-      })
-    }
-
-    _micError(error) {
-      const t = this._texts
-      const name = error && error.name
-      if (name === 'NotAllowedError' || name === 'SecurityError') return t.mic_denied
-      if (name === 'InsecureContext') return t.mic_insecure
-      if (name === 'CannotTalk') return t.cannot_talk
-      return t.mic_error
-    }
-
-    // The buttons are updated in place: drawing the tile again would restart the stream's sound.
-    _syncTalk(id) {
-      const t = this._texts
-      const talk = this._talkState(id)
-      const speaker = this.querySelector(`[data-speaker="${CSS.escape(id)}"]`)
-      const mic = this.querySelector(`[data-mic="${CSS.escape(id)}"]`)
-      const message = this.querySelector(`[data-talk-message="${CSS.escape(id)}"]`)
-      const audible = this._speakerAudible(id)
-      const locked = this._speakerLocked(id)
-      if (speaker) {
-        speaker.classList.toggle('on', audible)
-        speaker.setAttribute('aria-pressed', String(audible))
-        speaker.disabled = locked
-        speaker.title = locked ? t.speaker_locked : audible ? t.speaker_on : t.speaker_off
-        const icon = speaker.querySelector('ha-icon')
-        if (icon) icon.setAttribute('icon', audible ? 'mdi:volume-high' : 'mdi:volume-off')
-      }
-      if (mic) {
-        mic.classList.toggle('on', talk.mic === 'on')
-        mic.classList.toggle('busy', talk.mic === 'connecting')
-        mic.setAttribute('aria-pressed', String(talk.mic === 'on'))
-        mic.title = talk.mic === 'connecting' ? t.connecting : talk.mic === 'on' ? t.mic_on : t.mic_off
-        const icon = mic.querySelector('ha-icon')
-        if (icon) icon.setAttribute('icon', talk.mic === 'on' ? 'mdi:microphone' : 'mdi:microphone-off')
-      }
-      if (message) message.textContent = talk.message || ''
     }
 
     // --- pieces -------------------------------------------------------------
@@ -625,22 +314,57 @@
       return `<div class="wide"><div class="sec" data-heading="${escapeHtml(heading)}">${escapeHtml(heading)}</div><div class="tiles">${tiles}</div></div>`
     }
 
+    // The stream the card plays (the doorbell's `entity`) and, when that is the fluent one and
+    // the doorbell has a clear one, the stream HD switches to (`camera.x_fluent` -> `camera.x_clear`).
+    _streams(doorbell) {
+      const states = (this._hass && this._hass.states) || {}
+      const match = /^(camera\..+)_fluent(_\d+)?$/.exec(doorbell.entity)
+      const clear = match ? `${match[1]}_clear${match[2] || ''}` : null
+      return { live: doorbell.entity, clear: clear && states[clear] ? clear : null }
+    }
+
+    _liveEntityFor(doorbell) {
+      const streams = this._streams(doorbell)
+      return streams.clear && this._hd.has(doorbell.id) ? streams.clear : streams.live
+    }
+
+    // What the strip under a doorbell shows, in order (see `features` in doorbells.py).
+    _features(doorbell) {
+      return doorbell.features || DEFAULT_FEATURES
+    }
+
     _tileHtml(doorbell, t, gear) {
       const id = escapeHtml(doorbell.id)
+      const features = this._features(doorbell)
       const sensors = { visitor: doorbell.visitor, ...doorbell.sensors }
-      const chips = ['visitor', ...KINDS].filter((kind) => sensors[kind]).map((kind) =>
-        `<span class="chip${this._sensorOn(sensors[kind]) ? ' on' : ''}" data-sensor-state="${escapeHtml(sensors[kind])}" title="${escapeHtml(t[kind])}">${this._icon(ICONS[kind])}</span>`
-      ).join('')
-      const talkButtons = `<span class="sep"></span>
-        <button class="talk speaker" data-speaker="${id}" aria-pressed="false" aria-label="${escapeHtml(t.speaker)}" title="${escapeHtml(t.speaker_off)}">${this._icon('mdi:volume-off')}</button>
-        <button class="talk mic" data-mic="${id}" aria-pressed="false" aria-label="${escapeHtml(t.mic)}" title="${escapeHtml(t.mic_off)}">${this._icon('mdi:microphone-off')}</button>`
-      const cog = gear
-        ? `<button class="gear" data-settings="${id}" title="${escapeHtml(t.settings)}" aria-label="${escapeHtml(t.settings)}">${this._icon('mdi:cog')}</button>`
-        : ''
+      const pieces = {
+        hd: () => this._streams(doorbell).clear
+          ? `<button class="hd${this._hd.has(doorbell.id) ? ' on' : ''}" data-hd="${id}" aria-pressed="${this._hd.has(doorbell.id)}" title="${escapeHtml(t.hd_hint)}">${escapeHtml(t.hd)}</button>`
+          : '',
+        sensors: () => ['visitor', ...KINDS].filter((kind) => sensors[kind]).map((kind) =>
+          `<span class="chip${this._sensorOn(sensors[kind]) ? ' on' : ''}" data-sensor-state="${escapeHtml(sensors[kind])}" title="${escapeHtml(t[kind])}">${this._icon(ICONS[kind])}</span>`
+        ).join(''),
+        audio: () => `<button class="talk speaker" data-speaker="${id}" aria-pressed="false" aria-label="${escapeHtml(t.speaker)}" title="${escapeHtml(t.speaker_off)}">${this._icon('mdi:volume-off')}</button>`,
+        mic: () => `<button class="talk mic" data-mic="${id}" aria-pressed="false" aria-label="${escapeHtml(t.mic)}" title="${escapeHtml(t.mic_off)}">${this._icon('mdi:microphone-off')}</button>`,
+        // Inside the settings of the doorbell there is no gear to open them with.
+        settings: () => gear
+          ? `<button class="gear" data-settings="${id}" title="${escapeHtml(t.settings)}" aria-label="${escapeHtml(t.settings)}">${this._icon('mdi:cog')}</button>`
+          : '',
+      }
+      // A thin line between what is shown (the icons) and what is pressed (the speaker, the microphone).
+      let strip = ''
+      let previous = ''
+      for (const feature of features) {
+        const piece = pieces[feature] ? pieces[feature]() : ''
+        if (!piece) continue
+        if (previous === 'sensors' && (feature === 'audio' || feature === 'mic')) strip += '<span class="sep"></span>'
+        strip += piece
+        previous = feature
+      }
+      const message = features.includes('audio') || features.includes('mic') ? `<div class="msg" data-talk-message="${id}"></div>` : ''
       return `<ha-card class="tile">
         <div class="live" data-live="${id}"><span class="placeholder">${escapeHtml(doorbell.name)}</span></div>
-        <div class="caption"><span>${escapeHtml(doorbell.name)}</span><span class="chips">${chips}${talkButtons}${cog}</span></div>
-        <div class="msg" data-talk-message="${id}"></div>
+        <div class="caption"><span>${escapeHtml(doorbell.name)}</span><span class="chips">${strip}</span></div>${message}
       </ha-card>`
     }
 
@@ -1021,12 +745,16 @@
           .annika-doorbell ha-card.tile { display: block; overflow: hidden; }
           .annika-doorbell .live { aspect-ratio: 16 / 9; background: #000; display: flex; align-items: center; justify-content: center; color: var(--secondary-text-color); overflow: hidden; }
           .annika-doorbell .live > * { width: 100%; }
-          .annika-doorbell .live video { width: 100%; height: 100%; display: block; object-fit: contain; background: #000; }
+          .annika-doorbell .live video { cursor: pointer; width: 100%; height: 100%; display: block; object-fit: contain; background: #000; }
           .annika-doorbell .caption { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; padding: 8px 12px; gap: 8px; }
           .annika-doorbell .chips { display: inline-flex; align-items: center; gap: 6px; }
           .annika-doorbell .chip { --mdc-icon-size: 18px; display: inline-flex; color: var(--disabled-color); transition: color .2s; }
           .annika-doorbell .chip.on { color: var(--primary-color); filter: drop-shadow(0 0 4px color-mix(in srgb, var(--primary-color) 70%, transparent)); }
           .annika-doorbell .sep { width: 1px; height: 18px; background: var(--divider-color); margin: 0 4px; }
+          /* HD: the pill of the cameras card's HD button, small. */
+          .annika-doorbell .hd { border: 1px solid var(--divider-color); background: transparent; color: var(--primary-text-color); border-radius: 999px;
+            padding: 2px 10px; margin-right: 4px; font: inherit; font-size: 12px; cursor: pointer; }
+          .annika-doorbell .hd.on { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); }
           .annika-doorbell .gear { border: 0; background: transparent; color: var(--secondary-text-color); cursor: pointer; padding: 4px; margin-left: 2px;
             --mdc-icon-size: 20px; display: inline-flex; border-radius: 50%; }
           .annika-doorbell .gear:hover { color: var(--primary-text-color); }
@@ -1129,7 +857,7 @@
       this._bind(config, attrs)
       if (this._settings) this._mountSettings(config)
       this._mountLive(this._settings ? { doorbells: config.doorbells.filter((d) => d.id === this._settings) } : config)
-      config.doorbells.forEach((doorbell) => this._syncTalk(doorbell.id))
+      config.doorbells.forEach((doorbell) => this._talk.sync(doorbell.id))
       this._updateSensors()
       this._signImages()
       this._headings().then(() => requestAnimationFrame(() => { this.style.minHeight = '' }))
@@ -1160,17 +888,27 @@
       for (const doorbell of config.doorbells) {
         const holder = this.querySelector(`[data-live="${CSS.escape(doorbell.id)}"]`)
         if (!holder) continue
-        if (this._fallback[doorbell.id]) {
-          holder.replaceChildren(this._fallback[doorbell.id])
+        const entity = this._liveEntityFor(doorbell)
+        let player = this._players[doorbell.id]
+        if (player && player.entity !== entity) {
+          // Another stream (HD on or off): the sound goes with the old one.
+          this._talk.reset(doorbell.id)
+          player.close()
+          delete this._players[doorbell.id]
+          player = null
+        }
+        const fallback = this._fallback[doorbell.id]
+        if (fallback && fallback.entity === entity) {
+          holder.replaceChildren(fallback.element)
           continue
         }
-        let player = this._players[doorbell.id]
+        delete this._fallback[doorbell.id]
         if (!player) {
-          player = new Player(this._hass, doorbell.entity)
+          player = new window.Annika.Player(this._hass, entity)
           player.onfail = () => this._fellBack(doorbell)
           this._players[doorbell.id] = player
           holder.replaceChildren(player.video)
-          this._applySpeaker(doorbell.id)
+          this._talk.applySpeaker(doorbell.id)
           player.connect()
         } else {
           holder.replaceChildren(player.video)
@@ -1183,24 +921,28 @@
     // The doorbell could not be played this way: Home Assistant's own card takes over, without the microphone.
     async _fellBack(doorbell) {
       delete this._players[doorbell.id]
-      const talk = this._talkState(doorbell.id)
-      clearTimeout(talk.timer)
-      talk.mic = 'off'
-      talk.message = this._texts.cannot_talk
-      this._syncTalk(doorbell.id)
+      this._talk.reset(doorbell.id, this._texts.cannot_talk)
       if (!window.loadCardHelpers) return
       try {
+        const entity = this._liveEntityFor(doorbell)
         const helpers = await window.loadCardHelpers()
-        const el = await helpers.createCardElement({
-          type: 'picture-entity', entity: doorbell.entity, camera_view: 'live', show_name: false, show_state: false,
+        const element = await helpers.createCardElement({
+          type: 'picture-entity', entity, camera_view: 'live', show_name: false, show_state: false,
         })
-        el.hass = this._hass
-        this._fallback[doorbell.id] = el
+        element.hass = this._hass
+        this._fallback[doorbell.id] = { entity, element }
         const target = this.querySelector(`[data-live="${CSS.escape(doorbell.id)}"]`)
-        if (target) target.replaceChildren(el)
+        if (target) target.replaceChildren(element)
       } catch (err) {
         // The placeholder with the doorbell's name stays.
       }
+    }
+
+    // The dialog of the stream a Player is playing (a picture card that took over opens its own).
+    _moreInfo(id) {
+      const player = this._players[id]
+      if (!player) return
+      this.dispatchEvent(new CustomEvent('hass-more-info', { bubbles: true, composed: true, detail: { entityId: player.entity } }))
     }
 
     // --- events ---------------------------------------------------------------
@@ -1210,8 +952,24 @@
         this.querySelectorAll(selector).forEach((el) => el.addEventListener(event, (e) => handler(el, e)))
       const people = () => config.presence.people.map((person) => person.entity)
 
-      on('[data-speaker]', 'click', (el) => this._toggleSpeaker(el.dataset.speaker))
-      on('[data-mic]', 'click', (el) => this._toggleMic(el.dataset.mic))
+      // Tapping the picture opens the camera's own dialog, bigger (what Home Assistant's picture
+      // card does by itself; the pictures played by our Player have to ask for it).
+      on('[data-live]', 'click', (el, event) => {
+        if (event.target.closest && event.target.closest('button')) return
+        this._moreInfo(el.dataset.live)
+      })
+      on('[data-hd]', 'click', (el) => {
+        const id = el.dataset.hd
+        const doorbell = config.doorbells.find((d) => d.id === id)
+        if (!doorbell) return
+        if (this._hd.has(id)) this._hd.delete(id)
+        else this._hd.add(id)
+        el.classList.toggle('on', this._hd.has(id))
+        el.setAttribute('aria-pressed', String(this._hd.has(id)))
+        this._mountLive({ doorbells: [doorbell] })
+      })
+      on('[data-speaker]', 'click', (el) => this._talk.toggleSpeaker(el.dataset.speaker))
+      on('[data-mic]', 'click', (el) => this._talk.toggleMic(el.dataset.mic))
       on('[data-settings]', 'click', (el) => this._openSettings(el.dataset.settings))
       on('[data-back]', 'click', () => this._closeSettings())
 

@@ -240,7 +240,7 @@
         return gridConfig(
           [
             // With an automation of the house's own, the toggle is that automation.
-            tile(entities.automation || entities.enabled, {}, entities.automation ? undefined : labels.tile_schedule),
+            tile(entities.automation || entities.enabled, { features: [{ type: 'toggle' }], features_position: 'inline' }, entities.automation ? undefined : labels.tile_schedule),
             tile(entities.switch),
             // A button's state is when it was last pressed: nothing worth a line.
             running

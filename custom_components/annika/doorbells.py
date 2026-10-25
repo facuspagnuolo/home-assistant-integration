@@ -42,6 +42,18 @@ clips are deleted after `keep_days`. The clips and pictures of the clips go in `
         directory: /media/clips                  # where the clips go (default)
         recording: {home: false, away: true, before: 5, after: 20, keep_days: 14}
 
+`features` says what the strip under each doorbell shows, in this order: `hd` (a button to
+switch to the clear stream, when the doorbell's `entity` is a fluent one that has it),
+`sensors` (an icon
+for the visitor and each detection sensor, lit while it is on), `audio` (a speaker button:
+listen, muted until pressed), `mic` (a microphone button: talk, off until pressed) and
+`settings` (the gear of the doorbell's device). It starts as all but `hd`; set it for all the
+doorbells and, if one differs, in that doorbell:
+
+        features: [sensors, audio, mic, settings]
+        doorbells:
+          - {name: Front Door, entity: ..., visitor: ..., features: [sensors, settings]}
+
 `talk` is what the card does while someone speaks to the visitor through the
 doorbell: whether the speaker is muted meanwhile (so the doorbell's microphone
 does not hear itself) and whether the microphone is turned off by itself.
@@ -67,7 +79,7 @@ from homeassistant.helpers.event import async_track_state_change_event, async_tr
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from .cameras import slug
+from .cameras import TALK_SCHEMA, features_of, slug
 from .const import DOMAIN
 from .send_event import ACTOR_DEVICES, AnnikaEventClient
 
@@ -76,6 +88,8 @@ _LOGGER = logging.getLogger(__name__)
 DATA_DOORBELLS = f"{DOMAIN}_doorbells"
 
 DETECTIONS = ("person", "vehicle", "animal", "motion")
+FEATURES = ("hd", "sensors", "audio", "mic", "settings")
+DEFAULT_FEATURES = ("sensors", "audio", "mic", "settings")
 TARGETS = ("devices", "users")
 WHEN = ("home", "away")
 
@@ -96,12 +110,15 @@ _CLIP_FILE = re.compile(r"^[a-z0-9_]+_ring_\d{8}_\d{6}\.(mp4|jpg)$")
 
 _PERSON = vol.All(cv.entity_id, vol.Match(r"^person\."))
 
+_FEATURES = vol.All(cv.ensure_list, [vol.In(FEATURES)])
+
 DOORBELL_SCHEMA = vol.Schema(
     {
         vol.Required("name"): cv.string,
         vol.Required("entity"): cv.entity_id,
         vol.Required("visitor"): cv.entity_id,
         **{vol.Optional(kind): cv.entity_id for kind in DETECTIONS},
+        vol.Optional("features"): _FEATURES,
     }
 )
 
@@ -126,15 +143,8 @@ DOORBELLS_SCHEMA = vol.Schema(
         vol.Optional("notifications", default={}): vol.Schema(
             {vol.Optional(target): _WHEN for target in TARGETS}
         ),
-        vol.Optional("talk", default={}): vol.Schema(
-            {
-                vol.Optional("mute_speaker", default=True): cv.boolean,
-                vol.Optional("auto_off", default=True): cv.boolean,
-                vol.Optional("auto_off_seconds", default=60): vol.All(
-                    vol.Coerce(int), vol.Range(min=10, max=600)
-                ),
-            }
-        ),
+        vol.Optional("features", default=list(DEFAULT_FEATURES)): _FEATURES,
+        vol.Optional("talk", default={}): TALK_SCHEMA,
         vol.Required("doorbells"): vol.All(cv.ensure_list, [DOORBELL_SCHEMA], vol.Length(min=1)),
     }
 )
@@ -158,6 +168,8 @@ class _Doorbell:
         self.entity: str = config["entity"]
         self.visitor: str = config["visitor"]
         self.sensors: dict[str, str] = {kind: config[kind] for kind in DETECTIONS if kind in config}
+        # None: follows the doorbells' `features`.
+        self.features: list[str] | None = features_of(config["features"]) if "features" in config else None
 
 
 def image_base(hass: HomeAssistant, folder: str) -> str | None:
@@ -193,6 +205,7 @@ class AnnikaDoorbells:
             for target in TARGETS
         }
         self.talk: dict[str, Any] = dict(config["talk"])
+        self.features: list[str] = features_of(config["features"])
         self.last_ring: datetime | None = None
 
         self._last: dict[str, datetime] = {}
@@ -593,6 +606,7 @@ class AnnikaDoorbells:
                         "entity": doorbell.entity,
                         "visitor": doorbell.visitor,
                         "sensors": doorbell.sensors,
+                        "features": list(self.features if doorbell.features is None else doorbell.features),
                     }
                     for doorbell in self.doorbells
                 ],

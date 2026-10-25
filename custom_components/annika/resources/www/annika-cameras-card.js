@@ -13,6 +13,15 @@
 //   name: Cameras               # optional
 //   language: es                # optional; by default the Home Assistant language
 //
+// The strip under each camera is set by `features` (in the configuration of the cameras, for
+// all of them or one; see cameras.py): `sensors` (an icon for each detection sensor), `hd`,
+// `settings` (the gear), `audio` (a speaker button) and `mic` (a microphone button), in the
+// order they are listed. It starts as `hd, sensors, settings`. A camera with `audio` or `mic`
+// is played through a WebRTC connection of the card's own instead of Home Assistant's picture
+// card; its sound (a second connection) is only opened the first time the speaker or the
+// microphone is pressed, so until then nothing of it is received or sent, and the
+// microphone captures nothing until it is turned on.
+//
 // Live view: every camera plays its fluent (low resolution) stream, which is
 // what a Raspberry Pi can play for all of them at once. A camera with a clear
 // (high resolution) stream has an HD button that switches that camera alone
@@ -114,6 +123,7 @@
   }
 
   const KINDS = ['person', 'vehicle', 'animal', 'motion']
+  const DEFAULT_FEATURES = ['hd', 'sensors', 'settings']
   const ACTIONS = ['off', 'record', 'record_notify']
   const MODES = ['away', 'night', 'vacation']
   // What the settings of a camera show, in this order; the rest follows.
@@ -141,11 +151,34 @@
       this._liveEntity = {}
       // The cameras the person asked to see in HD: none until they ask.
       this._hd = new Set()
+      // The cameras with a speaker or a microphone button play through a Player of our own.
+      this._players = {}
+      this._fallback = {}
+      this._talkControls = null
       this._playing = null
       // The camera whose settings are open (replaces the card's content), or null.
       this._settings = null
       this._tiles = {}
       this._render()
+    }
+
+    connectedCallback() {
+      this._onHidden = () => {
+        if (typeof document !== 'undefined' && document.hidden) this._talk.allOff()
+      }
+      if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this._onHidden)
+      // Coming back after leaving: the connections were closed, draw them again.
+      if (this._config && this._hass && Object.keys(this._players).length === 0 && this._hasAnyAudio()) {
+        this._structure = ''
+        this._render()
+      }
+    }
+
+    disconnectedCallback() {
+      if (typeof document !== 'undefined' && this._onHidden) document.removeEventListener('visibilitychange', this._onHidden)
+      if (this._talkControls) this._talkControls.allOff()
+      Object.values(this._players || {}).forEach((player) => player.close())
+      this._players = {}
     }
 
     set hass(hass) {
@@ -154,6 +187,8 @@
       this._updateSensors()
       if (this._settings) Object.values(this._tiles).forEach((el) => (el.hass = hass))
       Object.values(this._live).forEach((el) => (el.hass = hass))
+      Object.values(this._players).forEach((player) => (player.hass = hass))
+      Object.values(this._fallback).forEach((el) => (el.hass = hass))
     }
 
     getCardSize() {
@@ -174,7 +209,8 @@
         ? window.Annika.language(this._hass, this._config)
         : (this._config.language || (this._hass && this._hass.language) || 'en')
       const base = String(lang).toLowerCase().split('-')[0]
-      return { ...TEXTS.en, ...(TEXTS[base] || {}) }
+      const talk = (window.Annika && window.Annika.TALK_TEXTS) || {}
+      return { ...TEXTS.en, ...(talk.en || {}), ...(TEXTS[base] || {}), ...(talk[base] || {}) }
     }
 
     get _stateObj() {
@@ -214,6 +250,35 @@
       return `<ha-icon icon="${name}"></ha-icon>`
     }
 
+    // What the strip under a camera shows, in order (see `features` in cameras.py).
+    _features(camera) {
+      return camera.features || DEFAULT_FEATURES
+    }
+
+    _hasAudio(camera) {
+      const features = this._features(camera)
+      return features.includes('audio') || features.includes('mic')
+    }
+
+    _hasAnyAudio() {
+      const stateObj = this._stateObj
+      const config = stateObj && stateObj.attributes.config
+      return !!config && config.cameras.some((camera) => this._hasAudio(camera))
+    }
+
+    get _talk() {
+      return (this._talkControls ||= new window.Annika.TalkControls(this, {
+        players: () => this._players,
+        settings: () => this._talkSettings,
+        texts: () => this._texts,
+      }))
+    }
+
+    get _talkSettings() {
+      const stateObj = this._stateObj
+      return (stateObj && stateObj.attributes.config && stateObj.attributes.config.talk) || {}
+    }
+
     // The two streams of a camera: fluent (what plays by default) and clear
     // (HD, when the camera has both). Named from the camera's entity, which is
     // either one of them. Keep HA's numeric suffix for cameras of the same
@@ -235,18 +300,38 @@
       return streams.clear && this._hd.has(camera.id) ? streams.clear : streams.fluent
     }
 
-    _camerasHtml(config, t) {
-      const tiles = config.cameras.map((camera) => {
-        const hd = this._streams(camera).clear
-          ? `<button class="hd${this._hd.has(camera.id) ? ' on' : ''}" data-hd="${escapeHtml(camera.id)}" aria-pressed="${this._hd.has(camera.id)}" title="${escapeHtml(t.hd_hint)}">${escapeHtml(t.hd)}</button>`
+    // One piece of the strip under a camera, by the name of its feature.
+    _featureHtml(feature, camera, t) {
+      const id = escapeHtml(camera.id)
+      if (feature === 'hd') {
+        return this._streams(camera).clear
+          ? `<button class="hd${this._hd.has(camera.id) ? ' on' : ''}" data-hd="${id}" aria-pressed="${this._hd.has(camera.id)}" title="${escapeHtml(t.hd_hint)}">${escapeHtml(t.hd)}</button>`
           : ''
-        const gear = `<button class="gear" data-settings="${escapeHtml(camera.id)}" title="${escapeHtml(t.settings)}" aria-label="${escapeHtml(t.settings)}">${this._icon('mdi:cog')}</button>`
-        const chips = KINDS.filter((kind) => camera.sensors[kind]).map((kind) =>
+      }
+      if (feature === 'settings') {
+        return `<button class="gear" data-settings="${id}" title="${escapeHtml(t.settings)}" aria-label="${escapeHtml(t.settings)}">${this._icon('mdi:cog')}</button>`
+      }
+      if (feature === 'sensors') {
+        return KINDS.filter((kind) => camera.sensors[kind]).map((kind) =>
           `<span class="chip${this._sensorOn(camera.sensors[kind]) ? ' on' : ''}" data-sensor-state="${escapeHtml(camera.sensors[kind])}" title="${escapeHtml(t[kind])}">${this._icon(ICONS[kind])}</span>`
         ).join('')
+      }
+      if (feature === 'audio') {
+        return `<button class="talk speaker" data-speaker="${id}" aria-pressed="false" aria-label="${escapeHtml(t.speaker)}" title="${escapeHtml(t.speaker_off)}">${this._icon('mdi:volume-off')}</button>`
+      }
+      if (feature === 'mic') {
+        return `<button class="talk mic" data-mic="${id}" aria-pressed="false" aria-label="${escapeHtml(t.mic)}" title="${escapeHtml(t.mic_off)}">${this._icon('mdi:microphone-off')}</button>`
+      }
+      return ''
+    }
+
+    _camerasHtml(config, t) {
+      const tiles = config.cameras.map((camera) => {
+        const strip = this._features(camera).map((feature) => this._featureHtml(feature, camera, t)).join('')
+        const message = this._hasAudio(camera) ? `<div class="msg" data-talk-message="${escapeHtml(camera.id)}"></div>` : ''
         return `<ha-card class="tile">
           <div class="live" data-live="${escapeHtml(camera.id)}"><span class="placeholder">${escapeHtml(camera.name)}</span></div>
-          <div class="caption"><span>${escapeHtml(camera.name)}</span><span class="chips">${hd}${chips}${gear}</span></div>
+          <div class="caption"><span>${escapeHtml(camera.name)}</span><span class="chips">${strip}</span></div>${message}
         </ha-card>`
       }).join('')
       return `<div class="wide"><div class="sec" data-heading="${escapeHtml(t.cameras)}">${escapeHtml(t.cameras)}</div><div class="tiles">${tiles}</div></div>`
@@ -622,6 +707,21 @@
           .annika-cams .gear { border: 0; background: transparent; color: var(--secondary-text-color); cursor: pointer; padding: 4px; margin-left: 2px;
             --mdc-icon-size: 20px; display: inline-flex; border-radius: 50%; }
           .annika-cams .gear:hover { color: var(--primary-text-color); }
+          .annika-cams .caption { flex-wrap: wrap; min-height: 48px; box-sizing: border-box; }
+          /* Speaker and microphone: the pill of the HD button, round, filled when on. */
+          .annika-cams .talk { --mdc-icon-size: 18px; border: 1px solid var(--divider-color); background: transparent; color: var(--secondary-text-color);
+            border-radius: 999px; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; padding: 0;
+            transition: background-color .15s, color .15s; }
+          .annika-cams .talk:hover:not(:disabled) { color: var(--primary-text-color); }
+          .annika-cams .talk.on { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); }
+          .annika-cams .talk:disabled { cursor: default; opacity: .6; }
+          .annika-cams .talk.busy { opacity: .6; cursor: progress; }
+          .annika-cams .talk.mic.on { animation: annika-cams-live 1.8s ease-in-out infinite; }
+          @keyframes annika-cams-live { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary-color) 45%, transparent); } 50% { box-shadow: 0 0 0 6px transparent; } }
+          @media (prefers-reduced-motion: reduce) { .annika-cams .talk.mic.on { animation: none; } }
+          .annika-cams .msg { color: var(--error-color, #db4437); font-size: 12px; padding: 0 12px; }
+          .annika-cams .msg:not(:empty) { padding-bottom: 8px; }
+          .annika-cams .live video { cursor: pointer; width: 100%; height: 100%; display: block; object-fit: contain; background: #000; }
           .annika-cams .chip { --mdc-icon-size: 18px; display: inline-flex; color: var(--disabled-color); transition: color .2s; }
           .annika-cams .chip.on { color: var(--primary-color); filter: drop-shadow(0 0 4px color-mix(in srgb, var(--primary-color) 70%, transparent)); }
 
@@ -722,6 +822,7 @@
       this._signImages()
       if (this._settings) this._mountSettings(config)
       this._mountLive(this._settings ? { cameras: config.cameras.filter((camera) => camera.id === this._settings) } : config)
+      config.cameras.forEach((camera) => this._hasAudio(camera) && this._talk.sync(camera.id))
       this._headings().then(() => requestAnimationFrame(() => { this.style.minHeight = '' }))
     }
 
@@ -748,6 +849,10 @@
       for (const camera of config.cameras) {
         const holder = this.querySelector(`[data-live="${CSS.escape(camera.id)}"]`)
         if (!holder) continue
+        if (this._hasAudio(camera) && window.Annika && window.Annika.Player) {
+          this._mountPlayer(camera, holder)
+          continue
+        }
         // Fluent unless this camera was asked for in HD; a stream already
         // playing for that choice is put back, not restarted.
         const entity = this._liveEntityFor(camera)
@@ -772,6 +877,57 @@
         } catch (err) {
           // The placeholder with the camera's name stays.
         }
+      }
+    }
+
+    // A camera with a speaker or microphone button: its picture comes through our own Player
+    // (the same stream the picture card would play), kept between renders like the live cards.
+    _mountPlayer(camera, holder) {
+      const entity = this._liveEntityFor(camera)
+      let player = this._players[camera.id]
+      if (player && player.entity !== entity) {
+        // Another stream (HD on or off): the sound goes with the old one.
+        this._talk.reset(camera.id)
+        player.close()
+        delete this._players[camera.id]
+        player = null
+      }
+      if (this._fallback[camera.id] && this._fallback[camera.id].entity === entity) {
+        holder.replaceChildren(this._fallback[camera.id].element)
+        return
+      }
+      delete this._fallback[camera.id]
+      if (!player) {
+        player = new window.Annika.Player(this._hass, entity)
+        player.onfail = () => this._fellBack(camera)
+        this._players[camera.id] = player
+        holder.replaceChildren(player.video)
+        this._talk.applySpeaker(camera.id)
+        player.connect()
+      } else {
+        holder.replaceChildren(player.video)
+        const playing = player.video.play && player.video.play()
+        if (playing && playing.catch) playing.catch(() => {})
+      }
+    }
+
+    // It could not be played this way: Home Assistant's own card takes over, without sound.
+    async _fellBack(camera) {
+      delete this._players[camera.id]
+      this._talk.reset(camera.id, this._texts.cannot_talk)
+      if (!window.loadCardHelpers) return
+      try {
+        const entity = this._liveEntityFor(camera)
+        const helpers = await window.loadCardHelpers()
+        const element = await helpers.createCardElement({
+          type: 'picture-entity', entity, camera_view: 'live', show_name: false, show_state: false,
+        })
+        element.hass = this._hass
+        this._fallback[camera.id] = { entity, element }
+        const target = this.querySelector(`[data-live="${CSS.escape(camera.id)}"]`)
+        if (target) target.replaceChildren(element)
+      } catch (err) {
+        // The placeholder with the camera's name stays.
       }
     }
 
@@ -821,6 +977,13 @@
       this._syncPlayer()
     }
 
+    // The dialog of the stream a Player is playing (a picture card opens its own by itself).
+    _moreInfo(id) {
+      const player = this._players[id]
+      if (!player) return
+      this.dispatchEvent(new CustomEvent('hass-more-info', { bubbles: true, composed: true, detail: { entityId: player.entity } }))
+    }
+
     _bind(config, attrs) {
       const on = (selector, event, handler) =>
         this.querySelectorAll(selector).forEach((el) => el.addEventListener(event, (e) => handler(el, e)))
@@ -831,6 +994,12 @@
           return box ? box.checked : (this._stateObj.attributes.config.when.armed_modes || []).includes(mode)
         })
 
+      // Tapping a picture played by our Player opens the camera's own dialog, bigger (what Home
+      // Assistant's picture card does by itself).
+      on('[data-live]', 'click', (el, event) => {
+        if (event.target.closest && event.target.closest('button')) return
+        this._moreInfo(el.dataset.live)
+      })
       on('[data-hd]', 'click', (el) => {
         const id = el.dataset.hd
         const camera = config.cameras.find((camera) => camera.id === id)
@@ -842,6 +1011,8 @@
         this._mountLive({ cameras: [camera] })
       })
 
+      on('[data-speaker]', 'click', (el) => this._talk.toggleSpeaker(el.dataset.speaker))
+      on('[data-mic]', 'click', (el) => this._talk.toggleMic(el.dataset.mic))
       on('[data-settings]', 'click', (el) => this._openSettings(el.dataset.settings))
       on('[data-back]', 'click', () => this._closeSettings())
 

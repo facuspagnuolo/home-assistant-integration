@@ -90,6 +90,7 @@
         tile_schedule: 'Schedule',
         tile_run: 'Run now',
         tile_stop: 'Stop',
+        tile_notify: 'Notifications',
         tile_start_mode: 'Start mode',
         start_sunrise: 'At sunrise',
         start_time: 'At a fixed time',
@@ -128,6 +129,7 @@
         tile_schedule: 'Programa',
         tile_run: 'Regar ahora',
         tile_stop: 'Detener',
+        tile_notify: 'Notificaciones',
         tile_start_mode: 'Inicio',
         start_sunrise: 'Al amanecer',
         start_time: 'A hora fija',
@@ -275,18 +277,24 @@
       const tile = (entity, options = {}, name) => tileConfig({ entity, name, color }, options)
       const labels = this._labels
 
+      // Run now and Stop take the same place: Stop while it waters, Run now
+      // while it does not. The tile is built again when a run starts or ends.
+      // A button's state is when it was last pressed: nothing worth a line.
+      const press = (entity) => ({ hide_state: true, tap_action: pressAction(entity), icon_tap_action: pressAction(entity) })
+      this._tileConfig = (running) =>
+        gridConfig(
+          [
+            running ? tile(entities.stop, press(entities.stop), labels.tile_stop) : tile(entities.run, press(entities.run), labels.tile_run),
+            // Only when the integration has `notify_view`: whether runs send an event.
+            ...(entities.notify ? [tile(entities.notify, {}, labels.tile_notify)] : []),
+          ],
+          entities.notify ? 2 : 1,
+        )
+
       const scheduleCards = [
         headingConfig(headings.schedule),
         // With an automation of the house's own, the toggle is that automation.
-        tile(entities.automation || entities.enabled, { features: [{ type: 'toggle' }] }, entities.automation ? undefined : labels.tile_schedule),
-        gridConfig(
-          [
-            // A button's state is when it was last pressed: nothing worth a line.
-            tile(entities.run, { hide_state: true, tap_action: pressAction(entities.run), icon_tap_action: pressAction(entities.run) }, labels.tile_run),
-            tile(entities.stop, { hide_state: true, tap_action: pressAction(entities.stop), icon_tap_action: pressAction(entities.stop) }, labels.tile_stop),
-          ],
-          2,
-        ),
+        tile(entities.automation || entities.enabled, { features: [{ type: 'toggle' }], features_position: 'inline' }, entities.automation ? undefined : labels.tile_schedule),
       ]
 
       // Only the control for the chosen mode shows; _update() swaps them. Not
@@ -318,7 +326,7 @@
       )
       // The safeguard for watering by hand: it exists when the zones are Rain Bird's.
       const manualConfig = entities.manual_minutes
-        ? tileConfig({ entity: entities.manual_minutes, name: this._labels.manual, color }, { features: [{ type: 'numeric-input', style: 'buttons' }] })
+        ? tileConfig({ entity: entities.manual_minutes, name: this._labels.manual, color }, { features: [{ type: 'numeric-input', style: 'buttons' }], features_position: 'inline' })
         : null
       const zoneColumns = Number(this._config.zone_columns) || DEFAULT_ZONE_COLUMNS
       const zonesConfig = {
@@ -356,6 +364,10 @@
 
       this._status = document.createElement('div')
       this._status.className = 'annika-irr-status'
+      this._tilesHost = document.createElement('div')
+      this._tilesRunning = this._isRunning()
+      this._tileCard = build(this._tileConfig(this._tilesRunning))
+      this._tilesHost.appendChild(this._tileCard)
 
       this.innerHTML = `
         <style>
@@ -425,7 +437,7 @@
       `
       const top = document.createElement('div')
       top.className = 'annika-irr-top'
-      top.appendChild(column(scheduleCards))
+      top.appendChild(column(scheduleCards, this._tilesHost))
       // When it runs next belongs with when it starts.
       const startColumn = column(startCards, this._status)
       // Two to a line: the mode, and the offset or the time, whichever the mode uses.
@@ -596,10 +608,33 @@
       input.value = String(Math.round(Number(state.state)))
     }
 
+    _isRunning() {
+      const state = this._hass && this._hass.states[this._entity]
+      return !!state && state.state === 'running'
+    }
+
+    // Run now and Stop take the same place: only the one that makes sense shows.
+    _swapTiles() {
+      const running = this._isRunning()
+      if (!this._tilesHost || !this._tileConfig || running === this._tilesRunning) return
+      this._tilesRunning = running
+      this._tilesPending = (async () => {
+        const helpers = await window.loadCardHelpers()
+        const card = helpers.createCardElement(this._tileConfig(running))
+        card.hass = this._hass
+        if (running !== this._tilesRunning) return
+        const index = this._cards ? this._cards.indexOf(this._tileCard) : -1
+        if (index >= 0) this._cards[index] = card
+        this._tilesHost.replaceChildren(card)
+        this._tileCard = card
+      })()
+    }
+
     _update() {
       if (!this._hass || !this._tableCard) return
       const state = this._hass.states[this._entity]
       if (!state) return
+      this._swapTiles()
       const attributes = state.attributes
 
       for (const input of this._tableCard.querySelectorAll('input[data-entity]')) {

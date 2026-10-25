@@ -853,7 +853,7 @@ td.act-cell { text-align: right; white-space: nowrap; }
       const entity = config.entities && config.entities.master
       const master = this._stripTile('master', entity && annika().tileConfig(
         { entity, name: t.ac, icon: 'mdi:air-conditioner', color: 'primary' },
-        { tap_action: { action: 'toggle' }, icon_tap_action: { action: 'toggle' } },
+        { features: [{ type: 'toggle' }], features_position: 'inline', tap_action: { action: 'toggle' }, icon_tap_action: { action: 'toggle' } },
       ), `<ha-card class="stile ${entity ? 'click' : ''} ${config.enabled ? '' : 'off'}" ${entity ? 'data-master' : ''}>
         <div class="ico">${this._icon('mdi:air-conditioner')}</div>
         <div class="txt"><div class="t">${escapeHtml(t.ac)}</div><div class="s">${escapeHtml(sub)}</div></div>

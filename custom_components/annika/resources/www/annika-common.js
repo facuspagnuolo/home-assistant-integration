@@ -732,6 +732,547 @@
     es: { ungrouped: 'Otros' },
   }
 
+  // --- listening and talking to a camera -----------------------------------
+  //
+  // WebRTC through Home Assistant's own `camera/webrtc/offer`: used by the cards of the
+  // doorbell and of the cameras that have a speaker or a microphone button.
+
+  // How long the browser has to gather its network candidates before the offer goes out.
+  const GATHER_MS = 2000
+  // A connection that drops is given this long to come back before the live view is given up.
+  const DISCONNECTED_MS = 5000
+
+  const gathered = (pc, ms) =>
+    new Promise((resolve) => {
+      if (pc.iceGatheringState === 'complete') return resolve()
+      const finish = () => {
+        pc.removeEventListener('icegatheringstatechange', check)
+        clearTimeout(timer)
+        resolve()
+      }
+      const check = () => {
+        if (pc.iceGatheringState === 'complete') finish()
+      }
+      const timer = setTimeout(finish, ms)
+      pc.addEventListener('icegatheringstatechange', check)
+    })
+
+  // How long the sound stays open after the speaker and the microphone are both off again.
+  const AUDIO_IDLE_MS = 30000
+  // How long the sound is given to connect.
+  const AUDIO_TIMEOUT_MS = 15000
+
+  // One WebRTC connection to a camera through Home Assistant's `camera/webrtc/offer`.
+  // `setup(pc, config)` adds what the connection carries; it returns null if it was
+  // closed (`isCurrent()` turned false) while it was being set up.
+  async function negotiate(hass, entity, setup, isCurrent, onFail) {
+    let config = {}
+    try {
+      config = await hass.callWS({ type: 'camera/webrtc/get_client_config', entity_id: entity })
+    } catch (err) {
+      // Home Assistant's defaults.
+    }
+    if (!isCurrent()) return null
+    const pc = new RTCPeerConnection((config && config.configuration) || {})
+    const session = {
+      pc,
+      unsubscribe: null,
+      close() {
+        if (this.unsubscribe) {
+          try {
+            this.unsubscribe()
+          } catch (err) {
+            // Already unsubscribed.
+          }
+          this.unsubscribe = null
+        }
+        pc.close()
+      },
+    }
+    setup(pc, config || {})
+    let timer = null
+    pc.addEventListener('connectionstatechange', () => {
+      if (!isCurrent()) return
+      clearTimeout(timer)
+      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') onFail()
+      else if (pc.connectionState === 'disconnected') timer = setTimeout(onFail, DISCONNECTED_MS)
+    })
+    try {
+      await pc.setLocalDescription(await pc.createOffer())
+      await gathered(pc, GATHER_MS)
+      if (!isCurrent()) return void session.close()
+      const unsubscribe = await hass.connection.subscribeMessage(
+        (message) => {
+          if (!isCurrent()) return
+          if (message.type === 'answer') {
+            pc.setRemoteDescription({ type: 'answer', sdp: message.answer }).catch(onFail)
+          } else if (message.type === 'candidate') {
+            pc.addIceCandidate(message.candidate).catch(() => {})
+          } else if (message.type === 'error') {
+            onFail()
+          }
+        },
+        { type: 'camera/webrtc/offer', entity_id: entity, offer: pc.localDescription.sdp }
+      )
+      session.unsubscribe = unsubscribe
+      if (!isCurrent()) return void session.close()
+    } catch (err) {
+      session.close()
+      if (isCurrent()) onFail()
+      return null
+    }
+    return session
+  }
+
+  // One doorbell's connections: the picture (always, with no sound) and the sound, a
+  // second connection that is only opened when the speaker or the microphone is first
+  // turned on, so until then nothing of the sound is received or sent, and the doorbell
+  // is not asked for it. The microphone is captured only while it is on.
+  class Player {
+    constructor(hass, entity) {
+      this.hass = hass
+      this.entity = entity
+      this.failed = false
+      this.onfail = null
+      this.audioState = 'off'
+      this._generation = 0
+      this._audioGeneration = 0
+      this._session = null
+      this._audioSession = null
+      this._audioPromise = null
+      this._transceiver = null
+      this._mic = null
+      this._idle = null
+      this._muted = true
+      this._video = null
+      this._element = null
+    }
+
+    // Always muted: the sound comes through its own element.
+    get video() {
+      if (!this._video) {
+        const video = document.createElement('video')
+        video.autoplay = true
+        video.muted = true
+        video.playsInline = true
+        video.setAttribute('playsinline', '')
+        video.className = 'annika-doorbell-video'
+        this._video = video
+      }
+      return this._video
+    }
+
+    get audioElement() {
+      if (!this._element) {
+        const element = document.createElement('audio')
+        element.autoplay = true
+        element.muted = this._muted
+        this._element = element
+      }
+      return this._element
+    }
+
+    // Whether the doorbell agreed to receive what the microphone sends (known once the sound is open).
+    get talkSupported() {
+      const direction = this._transceiver && this._transceiver.currentDirection
+      return !!direction && direction.startsWith('send')
+    }
+
+    get micOn() {
+      return !!this._mic
+    }
+
+    async connect() {
+      this.close()
+      this.failed = false
+      const generation = ++this._generation
+      const stream = new MediaStream()
+      const session = await negotiate(
+        this.hass,
+        this.entity,
+        (pc, config) => {
+          pc.addTransceiver('video', { direction: 'recvonly' })
+          pc.createDataChannel(config.dataChannel || 'dc')
+          pc.addEventListener('track', (event) => {
+            stream.addTrack(event.track)
+            const video = this.video
+            video.srcObject = stream
+            const playing = video.play && video.play()
+            if (playing && playing.catch) playing.catch(() => {})
+          })
+        },
+        () => generation === this._generation,
+        () => this._fail()
+      )
+      if (!session) return
+      if (generation === this._generation) this._session = session
+      else session.close()
+    }
+
+    _fail() {
+      if (this.failed) return
+      this.failed = true
+      this.close()
+      if (this.onfail) this.onfail()
+    }
+
+    // Opens the sound the first time it is asked for; resolves once it is flowing.
+    ensureAudio() {
+      clearTimeout(this._idle)
+      if (this.audioState === 'on') return Promise.resolve()
+      if (!this._audioPromise) this._audioPromise = this._openAudio()
+      return this._audioPromise
+    }
+
+    async _openAudio() {
+      this.audioState = 'connecting'
+      const generation = ++this._audioGeneration
+      const stream = new MediaStream()
+      const element = this.audioElement
+      let ready
+      const connected = new Promise((resolve, reject) => {
+        ready = { resolve, reject }
+      })
+      connected.catch(() => {})
+      const lost = () => {
+        if (generation !== this._audioGeneration) return
+        this.closeAudio()
+        ready.reject(new Error('audio'))
+      }
+      let transceiver = null
+      try {
+        const session = await negotiate(
+          this.hass,
+          this.entity,
+          (pc, config) => {
+            // sendrecv: the doorbell's sound comes in, and the microphone's goes out once there is a track.
+            transceiver = pc.addTransceiver('audio', { direction: 'sendrecv' })
+            pc.createDataChannel(config.dataChannel || 'dc')
+            pc.addEventListener('track', (event) => {
+              stream.addTrack(event.track)
+              element.srcObject = stream
+              element.muted = this._muted
+              const playing = element.play && element.play()
+              if (playing && playing.catch) playing.catch(() => {})
+            })
+            pc.addEventListener('connectionstatechange', () => {
+              if (pc.connectionState === 'connected') ready.resolve()
+            })
+          },
+          () => generation === this._audioGeneration,
+          lost
+        )
+        if (!session) throw new Error('audio')
+        this._audioSession = session
+        this._transceiver = transceiver
+        let timer
+        await Promise.race([
+          connected,
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('audio timeout')), AUDIO_TIMEOUT_MS)
+          }),
+        ]).finally(() => clearTimeout(timer))
+        if (generation !== this._audioGeneration) throw new Error('audio')
+        this.audioState = 'on'
+      } catch (err) {
+        if (generation === this._audioGeneration) this.closeAudio()
+        const error = new Error('audio')
+        error.name = 'AudioFailed'
+        throw error
+      }
+    }
+
+    // The speaker and the microphone are wanted (or no longer): the sound closes by itself a while after neither is.
+    setAudioWanted(wanted) {
+      clearTimeout(this._idle)
+      if (!wanted && this.audioState !== 'off') this._idle = setTimeout(() => this.closeAudio(), AUDIO_IDLE_MS)
+    }
+
+    closeAudio() {
+      this._audioGeneration += 1
+      clearTimeout(this._idle)
+      const track = this._mic
+      this._mic = null
+      if (track) track.stop()
+      if (this._audioSession) this._audioSession.close()
+      this._audioSession = null
+      this._audioPromise = null
+      this._transceiver = null
+      this.audioState = 'off'
+      if (this._element) this._element.srcObject = null
+    }
+
+    setMuted(muted) {
+      this._muted = muted
+      if (this._element) {
+        this._element.muted = muted
+        if (!muted && this._element.play) {
+          const playing = this._element.play()
+          if (playing && playing.catch) playing.catch(() => {})
+        }
+      }
+    }
+
+    // The browser asks for the microphone here, the first time.
+    async startMic() {
+      if (this._mic) return
+      const devices = typeof navigator !== 'undefined' && navigator.mediaDevices
+      if (!devices || !devices.getUserMedia || (typeof isSecureContext !== 'undefined' && isSecureContext === false)) {
+        const error = new Error('insecure')
+        error.name = 'InsecureContext'
+        throw error
+      }
+      await this.ensureAudio()
+      if (!this.talkSupported) {
+        const error = new Error('cannot talk')
+        error.name = 'CannotTalk'
+        throw error
+      }
+      const stream = await devices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      })
+      const track = stream.getAudioTracks()[0]
+      if (!this._transceiver || !this.talkSupported) {
+        track.stop()
+        const error = new Error('cannot talk')
+        error.name = 'CannotTalk'
+        throw error
+      }
+      await this._transceiver.sender.replaceTrack(track)
+      this._mic = track
+    }
+
+    // Stopping the track is what turns the browser's recording indicator off.
+    async stopMic() {
+      const track = this._mic
+      this._mic = null
+      if (track) track.stop()
+      if (this._transceiver) {
+        try {
+          await this._transceiver.sender.replaceTrack(null)
+        } catch (err) {
+          // The connection is already gone.
+        }
+      }
+    }
+
+    close() {
+      this._generation += 1
+      this.closeAudio()
+      if (this._session) this._session.close()
+      this._session = null
+      if (this._video) this._video.srcObject = null
+    }
+  }
+
+  // The texts of the speaker and microphone buttons, shared by the cards that have them.
+  const TALK_TEXTS = {
+    en: {
+      speaker: 'Speaker',
+      speaker_on: 'Mute the speaker',
+      speaker_off: 'Listen',
+      speaker_locked: 'The speaker is muted while talking',
+      mic: 'Microphone',
+      mic_on: 'Mute the microphone',
+      mic_off: 'Talk',
+      connecting: 'Connecting…',
+      cannot_talk: 'This camera cannot be talked to',
+      mic_denied: 'The microphone is not allowed in this browser',
+      mic_insecure: 'The microphone needs a secure (HTTPS) connection',
+      mic_error: 'The microphone could not be started',
+      audio_error: 'The sound could not be started',
+    },
+    es: {
+      speaker: 'Parlante',
+      speaker_on: 'Silenciar el parlante',
+      speaker_off: 'Escuchar',
+      speaker_locked: 'El parlante se silencia mientras se habla',
+      mic: 'Micrófono',
+      mic_on: 'Silenciar el micrófono',
+      mic_off: 'Hablar',
+      connecting: 'Conectando…',
+      cannot_talk: 'No se puede hablar por esta cámara',
+      mic_denied: 'El micrófono no está permitido en este navegador',
+      mic_insecure: 'El micrófono necesita una conexión segura (HTTPS)',
+      mic_error: 'No se pudo iniciar el micrófono',
+      audio_error: 'No se pudo iniciar el sonido',
+    },
+  }
+
+  // The state and behaviour of the speaker and microphone buttons of one or more cameras
+  // (by id), over their Players. The buttons are `[data-speaker="id"]` and `[data-mic="id"]`
+  // in `host`, and an error shows in `[data-talk-message="id"]`; they are updated in place,
+  // because drawing a tile again would restart its stream.
+  //
+  // `players()` is the Players by id, `settings()` is `{mute_speaker, auto_off, auto_off_seconds}`
+  // and `texts()` the card's texts (with TALK_TEXTS in them).
+  class TalkControls {
+    constructor(host, { players, settings, texts }) {
+      this.host = host
+      this._players = players
+      this._settings = settings
+      this._texts = texts
+      this._state = {}
+    }
+
+    state(id) {
+      return (this._state[id] ||= { speaker: false, mic: 'off', message: '', timer: null, audioBusy: false })
+    }
+
+    get settings() {
+      return this._settings() || {}
+    }
+
+    // The sound plays when it was asked for, unless the microphone is on and the speaker is
+    // set to stay quiet then (the camera's microphone would hear its own speaker).
+    speakerLocked(id) {
+      return this.state(id).mic === 'on' && this.settings.mute_speaker !== false
+    }
+
+    speakerAudible(id) {
+      return this.state(id).speaker && !this.speakerLocked(id)
+    }
+
+    applySpeaker(id) {
+      const player = this._players()[id]
+      if (player) player.setMuted(!this.speakerAudible(id))
+    }
+
+    // The sound is only opened (and only travels) once the speaker or the microphone is first
+    // turned on: it takes a few seconds, so the button shows it is busy meanwhile.
+    wantAudio(id) {
+      const player = this._players()[id]
+      const talk = this.state(id)
+      if (player && player.setAudioWanted) player.setAudioWanted(talk.speaker || talk.mic !== 'off')
+    }
+
+    toggleSpeaker(id) {
+      if (this.speakerLocked(id)) return
+      const talk = this.state(id)
+      const player = this._players()[id]
+      talk.speaker = !talk.speaker
+      talk.message = ''
+      this.wantAudio(id)
+      this.applySpeaker(id)
+      if (talk.speaker && player && player.audioState !== 'on') {
+        talk.audioBusy = true
+        this.sync(id)
+        player.ensureAudio().then(
+          () => {
+            talk.audioBusy = false
+            this.applySpeaker(id)
+            this.sync(id)
+          },
+          () => {
+            talk.audioBusy = false
+            talk.speaker = false
+            talk.message = this._texts().audio_error
+            this.wantAudio(id)
+            this.applySpeaker(id)
+            this.sync(id)
+          }
+        )
+        return
+      }
+      this.sync(id)
+    }
+
+    async toggleMic(id) {
+      const talk = this.state(id)
+      if (talk.mic === 'connecting') return
+      if (talk.mic === 'on') return this.micOff(id)
+      const player = this._players()[id]
+      talk.mic = 'connecting'
+      talk.message = ''
+      this.sync(id)
+      try {
+        if (!player || player.failed) {
+          const error = new Error('cannot talk')
+          error.name = 'CannotTalk'
+          throw error
+        }
+        await player.startMic()
+      } catch (error) {
+        talk.mic = 'off'
+        talk.message = this.error(error)
+        this.wantAudio(id)
+        this.sync(id)
+        return
+      }
+      talk.mic = 'on'
+      this.applySpeaker(id)
+      const settings = this.settings
+      if (settings.auto_off !== false) {
+        talk.timer = setTimeout(() => this.micOff(id), (settings.auto_off_seconds || 60) * 1000)
+      }
+      this.sync(id)
+    }
+
+    async micOff(id) {
+      const talk = this.state(id)
+      clearTimeout(talk.timer)
+      talk.timer = null
+      const player = this._players()[id]
+      if (player) await player.stopMic()
+      talk.mic = 'off'
+      this.wantAudio(id)
+      this.applySpeaker(id)
+      this.sync(id)
+    }
+
+    allOff() {
+      Object.keys(this._state).forEach((id) => {
+        if (this._state[id].mic !== 'off') this.micOff(id)
+      })
+    }
+
+    // Back to the start (its Player is gone or changed), with a message to show.
+    reset(id, message = '') {
+      const talk = this.state(id)
+      clearTimeout(talk.timer)
+      Object.assign(talk, { speaker: false, mic: 'off', timer: null, audioBusy: false, message })
+      this.sync(id)
+    }
+
+    error(error) {
+      const t = this._texts()
+      const name = error && error.name
+      if (name === 'NotAllowedError' || name === 'SecurityError') return t.mic_denied
+      if (name === 'InsecureContext') return t.mic_insecure
+      if (name === 'CannotTalk') return t.cannot_talk
+      return t.mic_error
+    }
+
+    sync(id) {
+      const t = this._texts()
+      const talk = this.state(id)
+      const find = (name) => this.host.querySelector(`[data-${name}="${CSS.escape(id)}"]`)
+      const speaker = find('speaker')
+      const mic = find('mic')
+      const message = find('talk-message')
+      const audible = this.speakerAudible(id)
+      const locked = this.speakerLocked(id)
+      if (speaker) {
+        speaker.classList.toggle('on', audible)
+        speaker.classList.toggle('busy', !!talk.audioBusy)
+        speaker.setAttribute('aria-pressed', String(audible))
+        speaker.disabled = locked
+        speaker.title = locked ? t.speaker_locked : audible ? t.speaker_on : t.speaker_off
+        const icon = speaker.querySelector('ha-icon')
+        if (icon) icon.setAttribute('icon', audible ? 'mdi:volume-high' : 'mdi:volume-off')
+      }
+      if (mic) {
+        mic.classList.toggle('on', talk.mic === 'on')
+        mic.classList.toggle('busy', talk.mic === 'connecting')
+        mic.setAttribute('aria-pressed', String(talk.mic === 'on'))
+        mic.title = talk.mic === 'connecting' ? t.connecting : talk.mic === 'on' ? t.mic_on : t.mic_off
+        const icon = mic.querySelector('ha-icon')
+        if (icon) icon.setAttribute('icon', talk.mic === 'on' ? 'mdi:microphone' : 'mdi:microphone-off')
+      }
+      if (message) message.textContent = talk.message || ''
+    }
+  }
+
   window.Annika = {
     language,
     textsFor,
@@ -752,6 +1293,9 @@
     discoverEntities,
     groupedTileCard,
     climateFeatures,
+    Player,
+    TalkControls,
+    TALK_TEXTS,
   }
 
   // --- card registration -------------------------------------------------

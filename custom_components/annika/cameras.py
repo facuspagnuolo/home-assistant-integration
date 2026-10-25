@@ -57,6 +57,29 @@ person walking up the garden is one clip and not twenty. Clips older than
 night. `always` overrides both. The YAML is where it starts; what the person
 edits from annika-cameras-card is stored and wins from then on.
 
+`features` says what the strip under each camera in the card shows, and in which order:
+
+    sensors     an icon for each detection sensor of the camera, lit while it is on
+    hd          a button to switch the camera to its clear stream (when it has one)
+    settings    the gear that opens the settings of the camera's device
+    audio       a speaker button: listen to the camera (muted until it is pressed)
+    mic         a microphone button: talk through the camera (off until it is pressed)
+
+It starts as `[hd, sensors, settings]`. Set it for all the cameras and, if one differs,
+in that camera. `audio` and `mic` play the camera's picture through a WebRTC connection of
+the card's own, and open the sound (a second connection) only when one of them is pressed,
+so until then nothing of the sound is received or sent. A camera that cannot be talked to
+shows a message when the microphone is pressed.
+
+        features: [hd, sensors, settings]
+        talk: {auto_off: true, auto_off_seconds: 60}
+        cameras:
+          - {name: Front, entity: ..., features: [hd, sensors, audio, mic, settings]}
+
+`talk` is what the card does while someone speaks: whether the microphone is turned off by
+itself after `auto_off_seconds`, and whether the speaker is muted meanwhile (`mute_speaker`,
+off unless you set it: the speaker and the microphone are each the person's to turn on).
+
 Needs `stream:` for the lookback (a camera that cannot stream records from the
 moment of the detection instead), and both folders allowed in
 `allowlist_external_dirs`. Clips are played through Home Assistant's own
@@ -89,6 +112,8 @@ _LOGGER = logging.getLogger(__name__)
 DATA_CAMERAS = f"{DOMAIN}_cameras"
 
 DETECTIONS = ("person", "vehicle", "animal", "motion")
+FEATURES = ("sensors", "hd", "settings", "audio", "mic")
+DEFAULT_FEATURES = ("hd", "sensors", "settings")
 ACTIONS = ("off", "record", "record_notify")
 MODES = ("away", "night", "vacation")
 
@@ -110,6 +135,30 @@ def _clock(value) -> time:
 
 
 _ACTION = vol.In(ACTIONS)
+_FEATURES = vol.All(cv.ensure_list, [vol.In(FEATURES)])
+
+def talk_schema(mute_speaker: bool) -> vol.Schema:
+    """What the card does while someone talks; `mute_speaker` is what it starts as."""
+
+    return vol.Schema(
+        {
+            vol.Optional("mute_speaker", default=mute_speaker): cv.boolean,
+            vol.Optional("auto_off", default=True): cv.boolean,
+            vol.Optional("auto_off_seconds", default=60): vol.All(vol.Coerce(int), vol.Range(min=10, max=600)),
+        }
+    )
+
+
+# The doorbells mute the speaker while talking (it sits next to the doorbell's microphone);
+# the cameras leave the speaker and the microphone each as the person set them.
+TALK_SCHEMA = talk_schema(True)
+CAMERAS_TALK_SCHEMA = talk_schema(False)
+
+
+def features_of(value) -> list[str]:
+    """The features of a camera: each once, in the order they were listed."""
+
+    return list(dict.fromkeys(value))
 
 CAMERA_SCHEMA = vol.Schema(
     {
@@ -117,6 +166,7 @@ CAMERA_SCHEMA = vol.Schema(
         vol.Required("entity"): cv.entity_id,
         **{vol.Optional(kind): cv.entity_id for kind in DETECTIONS},
         vol.Optional("group"): cv.string,
+        vol.Optional("features"): _FEATURES,
         vol.Optional("rules", default={}): vol.Schema({vol.Optional(kind): _ACTION for kind in DETECTIONS}),
     }
 )
@@ -152,6 +202,8 @@ CAMERAS_SCHEMA = vol.Schema(
                 vol.Optional("to", default="06:00"): _clock,
             }
         ),
+        vol.Optional("features", default=list(DEFAULT_FEATURES)): _FEATURES,
+        vol.Optional("talk", default={}): CAMERAS_TALK_SCHEMA,
         vol.Optional("groups", default=[]): vol.All(cv.ensure_list, [GROUP_SCHEMA]),
         vol.Required("cameras"): vol.All(cv.ensure_list, [CAMERA_SCHEMA], vol.Length(min=1)),
     }
@@ -188,6 +240,8 @@ class _Camera:
         self.entity: str = config["entity"]
         self.sensors: dict[str, str] = {kind: config[kind] for kind in DETECTIONS if kind in config}
         self.group_id: str | None = slug(config["group"]) if config.get("group") else None
+        # None: follows the cameras' `features`.
+        self.features: list[str] | None = features_of(config["features"]) if "features" in config else None
         # None: follows the group. A camera with no group always has a rule of its own.
         self.rules: dict[str, str | None] = {
             kind: config["rules"].get(kind, None if self.group_id else "off") for kind in self.sensors
@@ -217,6 +271,8 @@ class AnnikaCameras:
         self.cooldown: int = recording["cooldown"]
         self.keep_days: int = recording["keep_days"]
         self.when: dict[str, Any] = dict(config["when"])
+        self.features: list[str] = features_of(config["features"])
+        self.talk: dict[str, Any] = dict(config["talk"])
         self.cameras = [_Camera(camera) for camera in config["cameras"]]
         self.groups = self._build_groups(config)
         self.clips: list[dict] = []
@@ -585,6 +641,7 @@ class AnnikaCameras:
                     "to": self.when["to"].strftime("%H:%M"),
                 },
                 "notification": bool(self.notify_view),
+                "talk": dict(self.talk),
                 "groups": [
                     {"id": group.id, "name": group.name, "kinds": group.kinds, "rules": group.rules}
                     for group in self.groups
@@ -596,6 +653,7 @@ class AnnikaCameras:
                         "name": camera.name,
                         "entity": camera.entity,
                         "sensors": camera.sensors,
+                        "features": list(self.features if camera.features is None else camera.features),
                         "rules": camera.rules,
                     }
                     for camera in self.cameras
