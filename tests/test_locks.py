@@ -802,3 +802,26 @@ async def test_the_codes_are_not_recorded_in_the_history():
     from custom_components.annika.locks_entities import AnnikaLocksSensor
 
     assert {"codes", "config", "events"} <= AnnikaLocksSensor._unrecorded_attributes
+
+
+async def test_it_still_locks_when_the_lock_reports_in_between_states(hass, zwave, sent, clock):
+    locks = await start(hass)
+    locks.set_lock_settings(locks.locks[0], close_enabled=True, close_seconds=20)
+    hass.states.async_set(FRONT, "open")
+    await close_the_door(hass)
+    hass.states.async_set(FRONT, "unlocked")
+    await hass.async_block_till_done()
+    await clock(21)
+    assert [call.data["entity_id"] for call in zwave.lock] == [FRONT]
+
+
+async def test_a_door_back_from_unavailable_still_counts_as_closed(hass, zwave, sent, clock):
+    locks = await start(hass)
+    locks.set_lock_settings(locks.locks[0], close_enabled=True, close_seconds=20)
+    hass.states.async_set(FRONT, "unlocked")
+    hass.states.async_set(DOOR, "unavailable")
+    await hass.async_block_till_done()
+    hass.states.async_set(DOOR, "off")
+    await hass.async_block_till_done()
+    await clock(21)
+    assert [call.data["entity_id"] for call in zwave.lock] == [FRONT]

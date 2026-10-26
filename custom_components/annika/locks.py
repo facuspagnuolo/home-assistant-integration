@@ -95,6 +95,8 @@ OPEN_MAX_SECONDS = 3600
 # How long an action of the app, or a lock Annika locked itself, is remembered as
 # the reason for the opening that follows it.
 ORIGIN_WINDOW = 15
+# Lock states in which the door is not secured yet: the ones lock-after-closing may still lock.
+NEEDS_LOCKING = ("unlocked", "unlocking", "open", "opening")
 # A lock that changed with no word from Z-Wave is given this long to say it.
 ZWAVE_WAIT = 3
 # What counts as the same opening between the Z-Wave word and the state change.
@@ -762,7 +764,11 @@ class AnnikaLocks:
             self._door_changed(door, new.state, old.state)
 
     def _lock_changed(self, lock: _Lock, state: str) -> None:
-        self._cancel_close(lock)
+        _LOGGER.info("Annika locks: %s changed to %s", lock.entity, state)
+        if state not in NEEDS_LOCKING:
+            # Locked by hand, by the app, by its own auto-lock...: nothing left to do. The in-between
+            # states a Z-Wave lock reports (unlocking, open...) must not drop the countdown.
+            self._cancel_close(lock)
         if state == "unlocked":
             self._disarm_alarm(lock)
         if state in ("locked", "unlocked"):
@@ -836,15 +842,17 @@ class AnnikaLocks:
     def _cancel_close(self, lock: _Lock) -> None:
         cancel = self._close_timers.pop(lock.id, None)
         if cancel is not None:
+            _LOGGER.info("Annika locks: lock-after-closing countdown of %s cancelled", lock.entity)
             cancel()
 
     def _door_changed(self, lock: _Lock, new: str, old: str) -> None:
+        _LOGGER.info("Annika locks: door of %s went %s -> %s", lock.entity, old, new)
         if new == "on":
             self._cancel_close(lock)
             self._arm_open(lock)
         elif new == "off":
             self._cancel_open(lock)
-            if old == "on":
+            if old in ("on", "unavailable", "unknown"):
                 self._arm_close(lock)
 
     def _arm_close(self, lock: _Lock) -> None:
@@ -852,21 +860,36 @@ class AnnikaLocks:
 
         self._cancel_close(lock)
         state = self.hass.states.get(lock.entity)
-        if not lock.close_enabled or state is None or state.state != "unlocked":
+        if not lock.close_enabled or state is None or state.state not in NEEDS_LOCKING:
+            _LOGGER.info(
+                "Annika locks: not arming lock-after-closing for %s (enabled=%s, lock state=%s; needs enabled and 'unlocked')",
+                lock.entity,
+                lock.close_enabled,
+                state.state if state is not None else None,
+            )
             return
 
         @callback
         def fire(_now) -> None:
             self.hass.async_create_task(self._async_close(lock))
 
+        _LOGGER.info("Annika locks: %s will lock in %s s", lock.entity, lock.close_seconds)
         self._close_timers[lock.id] = async_call_later(self.hass, lock.close_seconds, fire)
 
     async def _async_close(self, lock: _Lock) -> None:
         self._close_timers.pop(lock.id, None)
         door = self.hass.states.get(lock.sensor) if lock.sensor else None
         state = self.hass.states.get(lock.entity)
-        if not lock.close_enabled or door is None or door.state != "off" or state is None or state.state != "unlocked":
+        if not lock.close_enabled or door is None or door.state != "off" or state is None or state.state not in NEEDS_LOCKING:
+            _LOGGER.info(
+                "Annika locks: not locking %s after the countdown (enabled=%s, door=%s, lock=%s)",
+                lock.entity,
+                lock.close_enabled,
+                door.state if door is not None else None,
+                state.state if state is not None else None,
+            )
             return
+        _LOGGER.info("Annika locks: locking %s now", lock.entity)
         self._origins[lock.id] = ("close", dt_util.utcnow())
         try:
             await self.hass.services.async_call("lock", "lock", {"entity_id": lock.entity}, blocking=True)
