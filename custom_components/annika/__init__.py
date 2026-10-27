@@ -41,6 +41,7 @@ from .const import (
     CONF_DEVICES,
     CONF_ENTITIES,
     CONF_EXCLUDE,
+    CONF_GATE,
     CONF_IRRIGATION,
     CONF_RAINBIRD_RECONNECT,
     CONF_POOL_FILTER,
@@ -51,12 +52,14 @@ from .const import (
     KIND_ALARM,
     KIND_CAMERAS,
     KIND_DOORBELLS,
+    KIND_GATE,
     KIND_IRRIGATION,
     KIND_AC,
     KIND_HEATING,
     KIND_LOCKS,
     KIND_POOL_FILTER,
 )
+from .gate import DATA_GATE, GATE_SCHEMA, AnnikaGate
 from .heartbeat import HeartbeatReporter
 from .irrigation import DATA_IRRIGATION, IRRIGATION_SCHEMA, AnnikaIrrigation
 from .rainbird import RainbirdReconnector
@@ -85,6 +88,7 @@ JS_RESOURCES = (
     ("annika-activity-card.js", "/annika_static/annika-activity-card.js"),
     ("annika-irrigation-card.js", "/annika_static/annika-irrigation-card.js"),
     ("annika-pool-filter-card.js", "/annika_static/annika-pool-filter-card.js"),
+    ("annika-gate-card.js", "/annika_static/annika-gate-card.js"),
 )
 
 CONFIG_SCHEMA = vol.Schema(
@@ -113,6 +117,8 @@ CONFIG_SCHEMA = vol.Schema(
                 vol.Optional(CONF_LOCKS): dict,
                 vol.Optional(CONF_HEATING): dict,
                 vol.Optional(CONF_AC): dict,
+                # The gate: its four entities, validated in async_setup_gate.
+                vol.Optional(CONF_GATE): dict,
                 # Physical sensors Annika wraps with an alarm participation
                 # switch. Devices can be named or given by registry id; every
                 # binary_sensor they own is picked up. See alarm.py.
@@ -417,6 +423,42 @@ async def async_setup_heating(hass: HomeAssistant, config: ConfigType) -> None:
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, heating.async_stop)
 
 
+GATE_PLATFORMS = ("cover", "sensor", "binary_sensor", "number", "button", "switch")
+
+
+async def async_setup_gate(hass: HomeAssistant, config: ConfigType) -> None:
+    """Create Annika's gate, if this unit configures one.
+
+    Starts after Home Assistant has: the four source entities belong to other
+    integrations, and the settings come back with the restored entities.
+    """
+
+    gate_config = config[DOMAIN].get(CONF_GATE)
+    if not gate_config:
+        return
+    try:
+        gate_config = GATE_SCHEMA(gate_config)
+    except vol.Invalid as error:
+        _LOGGER.error("Annika gate not started, invalid configuration: %s", error)
+        return
+
+    gate = AnnikaGate(hass, gate_config)
+    hass.data[DATA_GATE] = gate
+    for platform in GATE_PLATFORMS:
+        hass.async_create_task(
+            async_load_platform(hass, platform, DOMAIN, {DISCOVERY_KIND: KIND_GATE}, config)
+        )
+
+    async def async_start_gate(_event=None) -> None:
+        await gate.async_start()
+
+    if hass.is_running:
+        await async_start_gate()
+    else:
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, async_start_gate)
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, gate.async_stop)
+
+
 async def async_setup_ac(hass: HomeAssistant, config: ConfigType) -> None:
     """Create Annika's AC, if this unit configures any."""
 
@@ -553,6 +595,7 @@ async def async_setup(
     await async_setup_locks(hass, config)
     await async_setup_heating(hass, config)
     await async_setup_ac(hass, config)
+    await async_setup_gate(hass, config)
 
     heartbeat_reporter = HeartbeatReporter(hass)
     await heartbeat_reporter.async_start()

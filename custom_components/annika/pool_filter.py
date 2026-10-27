@@ -152,6 +152,7 @@ TEXTS = {
         "event_on": "🌊 {name} on",
         "event_off": "🌊 {name} off",
         "event_message": "{season}, {minutes} min",
+        "seasons": {"summer": "Summer", "autumn": "Autumn", "fall": "Autumn", "winter": "Winter", "spring": "Spring"},
     },
     "es": {
         "started": "{name} prendida ({season}, {minutes} min){manual}",
@@ -164,6 +165,7 @@ TEXTS = {
         "event_on": "🌊 {name} prendida",
         "event_off": "🌊 {name} apagada",
         "event_message": "{season}, {minutes} min",
+        "seasons": {"summer": "Verano", "autumn": "Otoño", "fall": "Otoño", "winter": "Invierno", "spring": "Primavera"},
     },
 }
 
@@ -376,10 +378,10 @@ class AnnikaPoolFilter:
         self.hass.async_create_task(self._async_switch(True))
         if not was_running:
             self._logbook(
-                "started", season=season.name, minutes=minutes, manual=self._text("manual") if manual else ""
+                "started", season=self._season_name(season), minutes=minutes, manual=self._text("manual") if manual else ""
             )
             self.hass.async_create_task(
-                self._send_event("event_on", season=season.name, minutes=minutes)
+                self._send_event("event_on", season=self._season_name(season), minutes=minutes)
             )
         return True
 
@@ -432,6 +434,13 @@ class AnnikaPoolFilter:
 
     def entity_id(self, domain: str, unique_id: str) -> str | None:
         return er.async_get(self.hass).async_get_entity_id(domain, DOMAIN, unique_id)
+
+    def _season_name(self, season: PoolFilterSeason) -> str:
+        """The season's name in the house's language when it is a known one."""
+
+        language = str(self.hass.config.language or "en").split("-")[0].lower()
+        names = TEXTS.get(language, TEXTS["en"])["seasons"]
+        return names.get(season.key, season.name)
 
     def _text(self, key: str, **values) -> str:
         language = str(self.hass.config.language or "en").split("-")[0].lower()

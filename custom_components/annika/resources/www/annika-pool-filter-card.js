@@ -40,6 +40,9 @@
 //     automation: Lo maneja
 //     on: prendida
 //     off: apagada
+//   season_names:               # optional, rename single seasons by their key
+//     summer: Verano            # (built in for summer, autumn/fall, winter
+//                               # and spring, in English and Spanish)
 //   grid_options:
 //     columns: full
 ;(() => {
@@ -56,6 +59,7 @@
   const TEXTS = {
     en: {
       headings: { schedule: 'Schedule', timetable: 'Timetable', history: 'History' },
+      seasons: { summer: 'Summer', autumn: 'Autumn', fall: 'Autumn', winter: 'Winter', spring: 'Spring' },
       labels: {
         next: 'Next run',
         none: 'Nothing scheduled',
@@ -78,6 +82,7 @@
     },
     es: {
       headings: { schedule: 'Programa', timetable: 'Horarios', history: 'Historial' },
+      seasons: { summer: 'Verano', autumn: 'Otoño', fall: 'Otoño', winter: 'Invierno', spring: 'Primavera' },
       labels: {
         next: 'Próxima corrida',
         none: 'Sin corridas programadas',
@@ -172,8 +177,9 @@
     _resolveTexts() {
       const lang = annika().language(this._hass, this._config)
       if (this._texts && this._texts.lang === lang) return
-      const { headings, labels } = annika().textsFor(TEXTS, lang)
+      const { headings, labels, seasons } = annika().textsFor(TEXTS, lang)
       this._texts = { lang }
+      this._seasonNames = { ...seasons, ...((this._config && this._config.season_names) || {}) }
       this._headings = { ...headings, ...((this._config && this._config.headings) || {}) }
       this._labels = { ...labels, ...((this._config && this._config.labels) || {}) }
     }
@@ -343,6 +349,12 @@
       this._cards = cards
     }
 
+    // A season is shown by its translated name when the card knows its key
+    // (summer, winter...), else by the name it has in the YAML.
+    _seasonName(season) {
+      return (this._seasonNames && this._seasonNames[season.key]) || season.name
+    }
+
     // The one part with no stock card: a season per row, a checkbox and a time
     // for each of its runs, and the minutes, each bound to its own entity.
     _table(attributes) {
@@ -356,7 +368,7 @@
           const months = (season.months || []).map((m) => month.format(new Date(Date.UTC(2024, m - 1, 1)))).join(', ')
           const runs = (season.runs || [])
             .map((run, index) => {
-              const label = `${season.name} ${index + 1}`
+              const label = `${this._seasonName(season)} ${index + 1}`
               return `<span class="annika-pf-run">
                 <input type="checkbox" class="annika-check" data-entity="${escapeHtml(run.enabled || '')}" aria-label="${escapeHtml(label)}" ${run.enabled ? '' : 'disabled'}>
                 <input type="time" data-entity="${escapeHtml(run.time || '')}" aria-label="${escapeHtml(label)}" ${run.time ? '' : 'disabled'}>
@@ -365,9 +377,9 @@
             .join('')
           return `
             <tr data-season="${escapeHtml(season.key)}">
-              <td class="season"><span class="name">${escapeHtml(season.name)}</span><span class="now" hidden>${escapeHtml(this._labels.now)}</span><div class="months">${escapeHtml(months)}</div></td>
+              <td class="season"><span class="name">${escapeHtml(this._seasonName(season))}</span><span class="now" hidden>${escapeHtml(this._labels.now)}</span><div class="months">${escapeHtml(months)}</div></td>
               <td><div class="annika-pf-runs">${runs}</div></td>
-              <td class="minutes"><input type="number" min="0" max="720" step="1" inputmode="numeric" data-entity="${escapeHtml(season.minutes || '')}" aria-label="${escapeHtml(`${season.name} ${this._labels.minutes}`)}" ${season.minutes ? '' : 'disabled'}><span class="unit">${escapeHtml(this._labels.minutes)}</span></td>
+              <td class="minutes"><input type="number" min="0" max="720" step="1" inputmode="numeric" data-entity="${escapeHtml(season.minutes || '')}" aria-label="${escapeHtml(`${this._seasonName(season)} ${this._labels.minutes}`)}" ${season.minutes ? '' : 'disabled'}><span class="unit">${escapeHtml(this._labels.minutes)}</span></td>
             </tr>`
         })
         .join('')

@@ -19,6 +19,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
+from . import gate_entities
 from .alarm import (
     ATTR_SOURCE_ENTITY_ID,
     DATA_ALARM,
@@ -27,6 +28,7 @@ from .alarm import (
     effective_is_on,
     source_is_alive,
 )
+from .const import DISCOVERY_KIND, KIND_GATE
 
 
 async def async_setup_platform(
@@ -38,6 +40,10 @@ async def async_setup_platform(
     """Set up the effective sensors from the YAML config."""
 
     if discovery_info is None:
+        return
+
+    if discovery_info.get(DISCOVERY_KIND) == KIND_GATE:
+        await gate_entities.async_setup_platform(hass, "binary_sensor", async_add_entities)
         return
 
     sensors: AnnikaAlarmSensors = hass.data[DATA_ALARM]

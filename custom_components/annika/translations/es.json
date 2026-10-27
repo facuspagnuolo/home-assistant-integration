@@ -45,6 +45,16 @@
           "idle": "En reposo",
           "running": "Funcionando"
         }
+      },
+      "gate_status": {
+        "state": {
+          "closed": "Cerrado",
+          "opening": "Abriendo",
+          "open": "Abierto",
+          "closing": "Cerrando",
+          "stopped": "Detenido",
+          "calibrating": "Calibrando"
+        }
       }
     }
   },

@@ -70,6 +70,15 @@
     return at < 0 ? '' : message.slice(at + 5).trim()
   }
 
+  // Lines the gate writes for presses that did not come from the app:
+  // "abierto (control remoto)".
+  const REMOTE = /\((control remoto|remote control)\)\s*$/i
+
+  function capitalize(text) {
+    const first = [...text][0]
+    return first ? first.toLocaleUpperCase() + text.slice(first.length) : text
+  }
+
   function initial(name) {
     const first = [...name.trim()][0]
     return first ? first.toLocaleUpperCase() : '?'
@@ -193,14 +202,15 @@
       } else {
         body = entries
           .map((entry) => {
-            const actor = actorOf(entry.message) || texts.someone
+            const remote = REMOTE.test(entry.message)
+            const actor = remote ? '' : actorOf(entry.message) || texts.someone
             // Only with more than one entity is "on what" not obvious.
             const detail = showEntity && entry.name ? `<div class="entity">${escapeHtml(entry.name)}</div>` : ''
             return `
               <div class="row">
-                <div class="badge" aria-hidden="true">${escapeHtml(initial(actor))}</div>
+                <div class="badge" aria-hidden="true">${remote ? '<ha-icon icon="mdi:remote"></ha-icon>' : escapeHtml(initial(actor))}</div>
                 <div class="text">
-                  <div class="actor">${escapeHtml(actor)}</div>
+                  <div class="actor">${escapeHtml(capitalize(entry.message))}</div>
                   ${detail}
                 </div>
                 <div class="when">${escapeHtml(this._when(entry.when))}</div>
@@ -217,6 +227,7 @@
           .row:last-child { border-bottom: none; }
           /* The card's colour, as the alarm's keypad and the pool's checkboxes
              have it: the theme's primary (green), with the theme's text colour on it. */
+          .badge ha-icon { --mdc-icon-size: 16px; }
           .badge { flex: none; width: 24px; height: 24px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background-color: var(--primary-color); color: var(--text-primary-color, #fff); font-size: 12px; font-weight: 500; }
           .text { flex: 1; min-width: 0; }
           .actor { color: var(--primary-text-color); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

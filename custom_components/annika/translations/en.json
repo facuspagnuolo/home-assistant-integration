@@ -45,6 +45,16 @@
           "idle": "Idle",
           "running": "Running"
         }
+      },
+      "gate_status": {
+        "state": {
+          "closed": "Closed",
+          "opening": "Opening",
+          "open": "Open",
+          "closing": "Closing",
+          "stopped": "Stopped",
+          "calibrating": "Calibrating"
+        }
       }
     }
   },
