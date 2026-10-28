@@ -92,6 +92,8 @@ MAX_TRAVEL_SECONDS = 300.0
 
 # A target this close to where the gate is counts as already there.
 POSITION_TOLERANCE = 2.0
+# Within this many percent of an end the gate counts as being at it: a sensor that lets go for a moment is not an open gate.
+END_ZONE = 2.0
 # Pulses a command may spend getting the gate moving the right way: 1 from an
 # end, 2 from a run the wrong way, 3 from a stop after a run the wrong way.
 MAX_PULSES = 4
@@ -362,9 +364,19 @@ class AnnikaGate:
     def available(self) -> bool:
         return self._is_known(self.pulse_switch)
 
+    @staticmethod
+    def snap(position: float) -> float:
+        """The position people are shown: the end itself when the gate is within END_ZONE of it."""
+
+        if position <= END_ZONE:
+            return 0.0
+        if position >= 100 - END_ZONE:
+            return 100.0
+        return position
+
     @property
     def is_closed(self) -> bool:
-        return self.motion == IDLE and self.closed_active
+        return self.motion == IDLE and (self.closed_active or self.snap(self.position) <= 0)
 
     @property
     def status(self) -> str:
@@ -378,6 +390,10 @@ class AnnikaGate:
         if self.closed_active:
             return STATUS_CLOSED
         if self.open_active:
+            return STATUS_OPEN
+        if self.snap(self.position) <= 0:
+            return STATUS_CLOSED
+        if self.snap(self.position) >= 100:
             return STATUS_OPEN
         return STATUS_STOPPED
 
@@ -396,9 +412,9 @@ class AnnikaGate:
 
     def position_now(self) -> float:
         if self.motion == IDLE or self.moving_since is None:
-            return self.position
+            return self.snap(self.position)
         if self._is_correction(self.motion):
-            return self.start_position
+            return self.snap(self.start_position)
         if self.motion == CLOSING and self.closed_active:
             return 0.0
         if self.motion == OPENING and self.open_active:
@@ -696,9 +712,9 @@ class AnnikaGate:
         if self.motion != IDLE:
             return False
         if target <= 0:
-            return self.closed_active
+            return self.closed_active or self.snap(self.position) <= 0
         if target >= 100:
-            return self.open_active
+            return self.open_active or self.snap(self.position) >= 100
         return abs(target - self.position) <= POSITION_TOLERANCE
 
     async def _async_goto(self, target: float) -> None:

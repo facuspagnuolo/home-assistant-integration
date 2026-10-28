@@ -332,9 +332,12 @@ async def test_status_follows_the_end_sensors(hass: HomeAssistant, board: Board)
     assert gate.position == 100
     board.at(40)
     await hass.async_block_till_done()
-    assert gate.status == "stopped"
-    # Nothing moved it that the gate saw: between the ends, it is somewhere in the middle.
+    # Nothing moved it that the gate saw: it let go of the end and no more than that, which still counts as the end.
+    assert gate.status == "open"
     assert 1 <= gate.position <= 99
+    gate.position = 40.0
+    gate.notify()
+    assert gate.status == "stopped"
 
 
 async def test_remote_control_opening_is_seen(hass: HomeAssistant, board: Board, clock: Clock) -> None:
@@ -430,6 +433,7 @@ async def test_closing_after_stopping_while_opening_takes_three_pulses(
     gate = await start(hass)
     board.at(50, last=CLOSING)
     await hass.async_block_till_done()
+    gate.position = 50.0
     # The next pulse would open it: it has to be stopped, then sent back.
     await gate.async_close()
     await idle(hass)
@@ -693,7 +697,8 @@ async def test_an_inverted_closed_sensor_reads_the_other_way(hass: HomeAssistant
     assert gate.position == 0
     hass.states.async_set(CLOSED, STATE_ON)
     await hass.async_block_till_done()
-    assert gate.status == "stopped"
+    assert gate.closed_active is False
+    assert gate.status == "closed"  # just let go of the end: still within it
 
 
 async def test_unavailable_sensor_is_not_an_end_even_when_inverted(hass: HomeAssistant, board: Board) -> None:
@@ -710,7 +715,7 @@ async def test_the_inversion_switches_flip_the_reading(hass: HomeAssistant, boar
     assert hass.states.get(switch).state == STATE_OFF
     await hass.services.async_call("switch", "turn_on", {"entity_id": switch}, blocking=True)
     assert gate.closed_inverted is True
-    assert gate.status == "stopped"
+    assert gate.closed_active is False
     await hass.services.async_call("switch", "turn_off", {"entity_id": switch}, blocking=True)
     assert gate.status == "closed"
 
@@ -984,3 +989,29 @@ async def test_presses_from_the_app_are_not_called_remote(hass: HomeAssistant, b
     await idle(hass)
     await board.settle()
     assert presses(hass, gate) == []
+
+
+async def test_a_sensor_letting_go_for_a_moment_is_not_an_open_gate(hass: HomeAssistant, board: Board) -> None:
+    gate = await start(hass)
+    board.at(40)  # the closed sensor lets go; no power, no pulse
+    await hass.async_block_till_done()
+    assert gate.status == "closed"
+    cover = hass.states.get(entity(hass, "cover", unique_cover(gate)))
+    assert cover.state == "closed"
+    assert cover.attributes["current_position"] == 0
+    # The same at the other end.
+    board.at(100)
+    await hass.async_block_till_done()
+    board.at(60)
+    await hass.async_block_till_done()
+    assert gate.status == "open"
+    assert hass.states.get(entity(hass, "cover", unique_cover(gate))).attributes["current_position"] == 100
+
+
+async def test_closing_a_gate_that_is_within_the_end_does_nothing(hass: HomeAssistant, board: Board) -> None:
+    gate = await start(hass)
+    board.at(40)
+    await hass.async_block_till_done()
+    await gate.async_close()
+    await idle(hass)
+    assert board.pulses == 0
