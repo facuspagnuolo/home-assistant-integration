@@ -23,6 +23,7 @@ from homeassistant.loader import async_get_integration
 from .actor import async_setup_actor
 from .alarm import DATA_ALARM, AnnikaAlarmSensors
 from .alarm_panel import ALARM_SCHEMA, DATA_ALARM_PANEL, AnnikaAlarmPanel
+from .alexa import DATA_ALEXA, async_setup_alexa
 from .cameras import CAMERAS_SCHEMA, DATA_CAMERAS, AnnikaCameras
 from .alarm_rules import AnnikaAlarmRules
 from .doorbells import DATA_DOORBELLS, DOORBELLS_SCHEMA, AnnikaDoorbells
@@ -500,6 +501,32 @@ async def async_setup_homekit_bridge(hass: HomeAssistant) -> None:
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, async_sync_homekit)
 
 
+async def async_setup_alexa_endpoint(hass: HomeAssistant) -> None:
+    """Keep Alexa's endpoint right, in a house whose owner turned Alexa on.
+
+    Starts after Home Assistant has, like the HomeKit bridge: what it exposes
+    depends on entities that other integrations, and Annika's own features,
+    register while it boots.
+    """
+
+    try:
+        await async_setup_alexa(hass, hass.data[DATA_HOMEKIT])
+    except Exception:  # noqa: BLE001 - Alexa failing must not take the rest of Annika down
+        _LOGGER.exception("Annika Alexa commands could not be registered")
+        return
+
+    async def async_sync_alexa(_event=None) -> None:
+        try:
+            await hass.data[DATA_ALEXA].async_sync()
+        except Exception:  # noqa: BLE001 - an endpoint that fails must not take the rest of Annika down
+            _LOGGER.exception("Annika Alexa endpoint could not be updated")
+
+    if hass.is_running:
+        await async_sync_alexa()
+    else:
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, async_sync_alexa)
+
+
 async def async_setup_actor_sensor(hass: HomeAssistant, config: ConfigType) -> None:
     """Wire up actor attribution and the sensor that surfaces it.
 
@@ -609,6 +636,7 @@ async def async_setup(
     await async_setup_actor_sensor(hass, config)
     await async_setup_homekit(hass, config[DOMAIN])
     await async_setup_homekit_bridge(hass)
+    await async_setup_alexa_endpoint(hass)
     await async_setup_irrigation(hass, config)
     await async_setup_pool_filter(hass, config)
     await async_setup_alarm_panel(hass, config)
