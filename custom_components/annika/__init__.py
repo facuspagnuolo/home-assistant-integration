@@ -61,6 +61,7 @@ from .const import (
 )
 from .gate import DATA_GATE, GATE_SCHEMA, AnnikaGate
 from .heartbeat import HeartbeatReporter
+from .homekit import DATA_HOMEKIT, async_setup_homekit
 from .irrigation import DATA_IRRIGATION, IRRIGATION_SCHEMA, AnnikaIrrigation
 from .rainbird import RainbirdReconnector
 from .pool_filter import DATA_POOL_FILTER, POOL_FILTER_SCHEMA, AnnikaPoolFilter
@@ -480,6 +481,25 @@ async def async_setup_ac(hass: HomeAssistant, config: ConfigType) -> None:
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, ac.async_stop)
 
 
+async def async_setup_homekit_bridge(hass: HomeAssistant) -> None:
+    """Keep the HomeKit bridge right, in a house whose owner turned Siri on.
+
+    Starts after Home Assistant has: the bridge's filter depends on entities
+    that other integrations, and Annika's own features, register while it boots.
+    """
+
+    async def async_sync_homekit(_event=None) -> None:
+        try:
+            await hass.data[DATA_HOMEKIT].async_sync()
+        except Exception:  # noqa: BLE001 - a bridge that fails must not take the rest of Annika down
+            _LOGGER.exception("Annika HomeKit bridge could not be updated")
+
+    if hass.is_running:
+        await async_sync_homekit()
+    else:
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, async_sync_homekit)
+
+
 async def async_setup_actor_sensor(hass: HomeAssistant, config: ConfigType) -> None:
     """Wire up actor attribution and the sensor that surfaces it.
 
@@ -587,6 +607,8 @@ async def async_setup(
 
     await async_setup_alarm_sensors(hass, config[DOMAIN])
     await async_setup_actor_sensor(hass, config)
+    await async_setup_homekit(hass, config[DOMAIN])
+    await async_setup_homekit_bridge(hass)
     await async_setup_irrigation(hass, config)
     await async_setup_pool_filter(hass, config)
     await async_setup_alarm_panel(hass, config)
