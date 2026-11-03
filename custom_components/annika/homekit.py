@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import re
 import socket
+from collections.abc import Callable
 from typing import Any
 
 import voluptuous as vol
@@ -174,6 +175,7 @@ class AnnikaHomeKit:
         self._expose: set[str] = set()
         self._hide: set[str] = set()
         self._reload_timer: Any = None
+        self._change_listeners: list[Callable[[], None]] = []
 
     async def async_load(self) -> None:
         stored = await self._store.async_load() or {}
@@ -210,8 +212,10 @@ class AnnikaHomeKit:
         return entity_id.split(".", 1)[0] in DEFAULT_DOMAINS and entity_id not in managed
 
     @callback
-    def _entity_filter(self) -> dict[str, list[str]]:
+    def entity_filter(self) -> dict[str, list[str]]:
         """What the bridge exposes: the default, with what the backend added and took away.
+
+        Alexa reads it too, so every voice assistant of the house gives the same devices.
 
         Home Assistant includes an entity listed in `include_entities` whatever
         else says, which is what lets a device outside the default be added.
@@ -270,7 +274,15 @@ class AnnikaHomeKit:
         self._expose = set(expose) - self._hide
         await self._store.async_save({"expose": sorted(self._expose), "hide": sorted(self._hide)})
         await self.async_sync()
+        for listener in self._change_listeners:
+            listener()
         return {"expose": sorted(self._expose), "hide": sorted(self._hide)}
+
+    @callback
+    def async_add_change_listener(self, listener: Callable[[], None]) -> None:
+        """Tell another voice assistant when the backend changes the choice."""
+
+        self._change_listeners.append(listener)
 
     @callback
     def async_watch_new_entities(self) -> None:
@@ -317,7 +329,7 @@ class AnnikaHomeKit:
         if entry is None:
             return
 
-        entity_filter = self._entity_filter()
+        entity_filter = self.entity_filter()
         # An entry Home Assistant has not set up yet still carries its filter in `data`.
         if not force and entry.options.get("filter", entry.data.get("filter")) == entity_filter:
             return
@@ -336,7 +348,7 @@ class AnnikaHomeKit:
                 data={
                     "name": HOMEKIT_BRIDGE_NAME,
                     "port": await self._free_port(),
-                    "filter": self._entity_filter(),
+                    "filter": self.entity_filter(),
                 },
             )
 

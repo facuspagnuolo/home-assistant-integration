@@ -340,7 +340,7 @@ async def test_the_choice_survives_a_restart(hass):
     restarted = AnnikaHomeKit(hass, {})
     await restarted.async_load()
 
-    assert restarted._entity_filter() == filter_for(expose=["scene.noche"], exclude=["light.sotano"])
+    assert restarted.entity_filter() == filter_for(expose=["scene.noche"], exclude=["light.sotano"])
 
 
 async def test_what_the_house_stored_before_devices_could_be_added_still_applies(hass):
@@ -349,7 +349,7 @@ async def test_what_the_house_stored_before_devices_could_be_added_still_applies
     restarted = AnnikaHomeKit(hass, {})
     await restarted.async_load()
 
-    assert restarted._entity_filter() == filter_for(exclude=["light.sotano"])
+    assert restarted.entity_filter() == filter_for(exclude=["light.sotano"])
 
 
 async def test_choosing_devices_updates_and_reloads_the_bridge_that_already_exists(hass):
@@ -482,7 +482,7 @@ async def test_home_assistant_reads_the_filter_the_way_the_choice_means_it(hass)
     homekit = AnnikaHomeKit(hass, {"gate": {"cover": "cover.porton"}, "locks": [{"entity": "lock.puerta"}]})
     await homekit.async_configure(["scene.noche", "cover.porton"], ["light.sotano"])
 
-    allowed = home_assistants_filter(homekit._entity_filter())
+    allowed = home_assistants_filter(homekit.entity_filter())
 
     assert allowed("light.sala"), "a default device nobody chose anything for"
     assert allowed("light.nueva"), "a device installed later follows the default"

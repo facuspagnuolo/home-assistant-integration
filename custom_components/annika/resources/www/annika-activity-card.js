@@ -229,7 +229,7 @@
              have it: the theme's primary (green), with the theme's text colour on it. */
           .badge ha-icon { --mdc-icon-size: 16px; }
           .badge { flex: none; width: 24px; height: 24px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background-color: var(--primary-color); color: var(--text-primary-color, #fff); font-size: 12px; font-weight: 500; }
-          .text { flex: 1; min-width: 0; }
+          .text { flex: 1 1 auto; min-width: 0; }
           .actor { color: var(--primary-text-color); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
           .entity { color: var(--secondary-text-color); font-size: 0.9em; }
           .when { color: var(--secondary-text-color); font-size: 0.9em; white-space: nowrap; }
