@@ -10,7 +10,7 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
     async_wait_recording_done,
 )
 
-from custom_components.annika.activity import describe_action
+from custom_components.annika.activity import describe_action, describe_position_move
 from custom_components.annika.actor import DATA_ACTOR, Actor, async_setup_actor
 from custom_components.annika.const import DOMAIN
 
@@ -124,3 +124,38 @@ async def test_unattributed_calls_add_no_line(hass, stamps, hass_ws_client):
 )
 def test_describe_action(domain, service, expected):
     assert describe_action(domain, service) == expected
+
+
+@pytest.mark.parametrize(
+    ("current", "target", "expected"),
+    [
+        (50, 100, "abierto"),
+        (50, 0, "cerrado"),
+        (30, 60, "abierto hasta el 60%"),
+        (80, 40, "cerrado hasta el 40%"),
+        (40, 40, "movido al 40%"),
+        (None, 40, "movido al 40%"),
+    ],
+)
+async def test_slider_moves_say_which_way_they_went(hass, current, target, expected):
+    attributes = {} if current is None else {"current_position": current}
+    hass.states.async_set("cover.gate", "open", attributes)
+
+    assert describe_position_move(hass, "set_cover_position", "cover.gate", {"position": target}) == expected
+
+
+async def test_position_move_without_a_target_falls_back(hass):
+    hass.states.async_set("cover.gate", "open", {"current_position": 50})
+
+    assert describe_position_move(hass, "set_cover_position", "cover.gate", {}) is None
+    assert describe_position_move(hass, "open_cover", "cover.gate", {"position": 30}) is None
+
+
+async def test_the_same_action_twice_in_a_row_writes_one_line(hass, stamps, hass_ws_client):
+    for _ in range(2):
+        stamps.stamp(Actor(name="Facu"), "switch", "turn_on", ["switch.siren"])
+        await hass.services.async_call("switch", "turn_on", {"entity_id": "switch.siren"}, blocking=True)
+
+    lines = await annika_lines(hass, hass_ws_client, ["switch.siren"])
+
+    assert [line["message"] for line in lines] == ["activado por Facu"]

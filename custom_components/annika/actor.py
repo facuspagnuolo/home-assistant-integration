@@ -108,6 +108,11 @@ STAMP_TTL = 8.0
 # stamps without ever calling: bounded memory, oldest dropped first.
 MAX_STAMPS = 64
 
+# The same line for the same entity inside this many seconds is one thing
+# someone did: a slider that sends the same target twice in a row, a double tap.
+# Only the visible logbook line is held back; the action is still recorded.
+LINE_REPEAT_WINDOW = 3.0
+
 # Long enough for a real name, short enough that the attribute stays readable
 # in the UI and in a push notification.
 MAX_NAME_LENGTH = 64
@@ -383,6 +388,7 @@ def async_setup_actor(hass: HomeAssistant) -> AnnikaLastAction:
     stamps = ActorStamps(hass)
     last_action = AnnikaLastAction()
     hass.data[DATA_ACTOR] = {"stamps": stamps, "last_action": last_action}
+    last_lines: dict[tuple[str | None, str], float] = {}
 
     # `@callback` outermost, the way Home Assistant's own commands are
     # written. It is what marks this as running inline on the socket's own
@@ -448,11 +454,23 @@ def async_setup_actor(hass: HomeAssistant) -> AnnikaLastAction:
 
         # The line people actually read, shown by annika-activity-card (and
         # by any logbook that shows this entity). See activity.py.
-        hass.bus.async_fire(
-            EVENT_LOGBOOK_ENTRY,
-            logbook_entry(hass, actor.name, domain, service, action.entity_id),
-            context=event.context,
+        line = logbook_entry(
+            hass,
+            actor.name,
+            domain,
+            service,
+            action.entity_id,
+            event.data.get(ATTR_SERVICE_DATA),
         )
+        now = hass.loop.time()
+        key = (line.get("entity_id"), line["message"])
+        previous = last_lines.get(key)
+        last_lines[key] = now
+        if previous is None or now - previous >= LINE_REPEAT_WINDOW:
+            hass.bus.async_fire(EVENT_LOGBOOK_ENTRY, line, context=event.context)
+        if len(last_lines) > MAX_STAMPS:
+            for stale in [k for k, seen in last_lines.items() if now - seen >= LINE_REPEAT_WINDOW]:
+                del last_lines[stale]
 
     hass.bus.async_listen(EVENT_CALL_SERVICE, handle_call_service)
 

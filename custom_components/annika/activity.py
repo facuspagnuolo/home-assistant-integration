@@ -92,6 +92,51 @@ DOMAIN_VERBS = {
 }
 
 
+# `set_cover_position` is how the app's slider moves a gate or a blind. "Movido"
+# says nothing: the call carries the target and the cover still reports where it
+# is, so the line can say which way it went.
+POSITION_SERVICES = {
+    "set_cover_position": ("position", "current_position"),
+    "set_cover_tilt_position": ("tilt_position", "current_tilt_position"),
+}
+
+
+def _percent(value: Any) -> int | None:
+    try:
+        return round(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def describe_position_move(
+    hass: HomeAssistant,
+    service: str,
+    entity_id: str | None,
+    service_data: dict[str, Any] | None,
+) -> str | None:
+    """"abierto", "cerrado", "abierto hasta el 60%"... or None when it cannot tell.
+
+    Read before the call runs (the call_service event fires first), so the
+    entity's position is where it was, not where it is going.
+    """
+
+    keys = POSITION_SERVICES.get(service)
+    if keys is None or not entity_id or not service_data:
+        return None
+    target = _percent(service_data.get(keys[0]))
+    if target is None:
+        return None
+    if target >= 100:
+        return "abierto"
+    if target <= 0:
+        return "cerrado"
+    state = hass.states.get(entity_id)
+    current = _percent(state.attributes.get(keys[1])) if state else None
+    if current is None or current == target:
+        return f"movido al {target}%"
+    return f"{'abierto' if target > current else 'cerrado'} hasta el {target}%"
+
+
 def describe_action(domain: str, service: str) -> str:
     """What the call did, in words."""
 
@@ -105,6 +150,7 @@ def logbook_entry(
     domain: str,
     service: str,
     entity_id: str | None,
+    service_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Data for the `logbook_entry` event describing one attributed action."""
 
@@ -115,7 +161,10 @@ def logbook_entry(
         entity_id = f"script.{service}"
         action = "ejecutado"
     else:
-        action = describe_action(domain, service)
+        action = (
+            describe_position_move(hass, service, entity_id, service_data)
+            or describe_action(domain, service)
+        )
 
     data: dict[str, Any] = {
         "message": f"{action} por {actor_name}",
