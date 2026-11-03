@@ -37,8 +37,8 @@ of nobody in particular: the lock changed, that is all Annika knows.
 Rule: disarm the alarm when a door is unlocked, however it was opened, while the
 alarm is armed (or counting down) in one of the chosen modes.
 
-Lock when closed: a lock can lock itself some seconds after its door closes
-(needs a `sensor`). The two settings of that and the one of "hold to unlock" are
+Lock when closed: a lock can lock itself some seconds after its door closes, or
+after it was unlocked with its door already shut (needs a `sensor`). The two settings of that and the one of "hold to unlock" are
 entities of each lock, so the card shows them as it shows any other setting.
 """
 
@@ -771,6 +771,7 @@ class AnnikaLocks:
             self._cancel_close(lock)
         if state == "unlocked":
             self._disarm_alarm(lock)
+            self._arm_close_if_door_shut(lock)
         if state in ("locked", "unlocked"):
             direction = "unlock" if state == "unlocked" else "lock"
             at = dt_util.utcnow()
@@ -855,8 +856,22 @@ class AnnikaLocks:
             if old in ("on", "unavailable", "unknown"):
                 self._arm_close(lock)
 
+    def _arm_close_if_door_shut(self, lock: _Lock) -> None:
+        """The lock was just unlocked with its door shut: start the same countdown.
+
+        A door opened and closed quicker than its sensor reports (somebody coming in)
+        never goes closed -> open -> closed, so the countdown of `_arm_close` would not
+        start and the lock would stay unlocked. If the door is open instead, nothing
+        starts here: closing it will.
+        """
+
+        door = self.hass.states.get(lock.sensor) if lock.sensor else None
+        if door is None or door.state != "off" or lock.id in self._close_timers:
+            return
+        self._arm_close(lock)
+
     def _arm_close(self, lock: _Lock) -> None:
-        """The door just closed: lock it after the lock's number of seconds, if it asks for that."""
+        """The door closed, or the lock was unlocked with it shut: lock it after the lock's number of seconds, if it asks for that."""
 
         self._cancel_close(lock)
         state = self.hass.states.get(lock.entity)

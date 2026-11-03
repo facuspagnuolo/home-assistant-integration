@@ -133,7 +133,9 @@ def test_describe_action(domain, service, expected):
         (50, 0, "cerrado"),
         (30, 60, "abierto hasta el 60%"),
         (80, 40, "cerrado hasta el 40%"),
-        (40, 40, "movido al 40%"),
+        (100, 100, ""),
+        (0, 0, ""),
+        (40, 40, ""),
         (None, 40, "movido al 40%"),
     ],
 )

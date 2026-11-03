@@ -95,6 +95,8 @@ DOMAIN_VERBS = {
 # `set_cover_position` is how the app's slider moves a gate or a blind. "Movido"
 # says nothing: the call carries the target and the cover still reports where it
 # is, so the line can say which way it went.
+NO_CHANGE = ""  # a position call that asked for where the cover already is
+
 POSITION_SERVICES = {
     "set_cover_position": ("position", "current_position"),
     "set_cover_tilt_position": ("tilt_position", "current_tilt_position"),
@@ -126,13 +128,17 @@ def describe_position_move(
     target = _percent(service_data.get(keys[0]))
     if target is None:
         return None
+    target = max(0, min(100, target))
+    state = hass.states.get(entity_id)
+    current = _percent(state.attributes.get(keys[1])) if state else None
+    if current is not None and current == target:
+        # Already there: nothing moved, so there is nothing to write down.
+        return NO_CHANGE
     if target >= 100:
         return "abierto"
     if target <= 0:
         return "cerrado"
-    state = hass.states.get(entity_id)
-    current = _percent(state.attributes.get(keys[1])) if state else None
-    if current is None or current == target:
+    if current is None:
         return f"movido al {target}%"
     return f"{'abierto' if target > current else 'cerrado'} hasta el {target}%"
 
@@ -151,8 +157,11 @@ def logbook_entry(
     service: str,
     entity_id: str | None,
     service_data: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Data for the `logbook_entry` event describing one attributed action."""
+) -> dict[str, Any] | None:
+    """Data for the `logbook_entry` event describing one attributed action.
+
+    None when the call changed nothing and so has no line to write.
+    """
 
     if not entity_id and domain == "script" and service not in SERVICE_VERBS:
         # A script called directly (`script.porton_pulso`) rather than through
@@ -161,10 +170,10 @@ def logbook_entry(
         entity_id = f"script.{service}"
         action = "ejecutado"
     else:
-        action = (
-            describe_position_move(hass, service, entity_id, service_data)
-            or describe_action(domain, service)
-        )
+        action = describe_position_move(hass, service, entity_id, service_data)
+        if action == NO_CHANGE:
+            return None
+        action = action or describe_action(domain, service)
 
     data: dict[str, Any] = {
         "message": f"{action} por {actor_name}",

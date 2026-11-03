@@ -825,3 +825,75 @@ async def test_a_door_back_from_unavailable_still_counts_as_closed(hass, zwave, 
     await hass.async_block_till_done()
     await clock(21)
     assert [call.data["entity_id"] for call in zwave.lock] == [FRONT]
+
+
+# --- lock when closed: unlocked with the door already shut ---------------------
+
+
+async def test_a_lock_unlocked_with_its_door_shut_locks_itself(hass, zwave, sent, clock):
+    # Somebody comes in quicker than the door sensor reports: no closed -> open -> closed.
+    locks = await start(hass)
+    locks.set_lock_settings(locks.locks[0], close_enabled=True, close_seconds=20)
+    hass.states.async_set(DOOR, "off")
+    await hass.async_block_till_done()
+    hass.states.async_set(FRONT, "unlocked")
+    await hass.async_block_till_done()
+    await clock(19)
+    assert zwave.lock == []
+    await clock(2)
+    assert [call.data["entity_id"] for call in zwave.lock] == [FRONT]
+
+
+async def test_a_lock_unlocked_with_its_door_open_waits_for_it_to_close(hass, zwave, sent, clock):
+    locks = await start(hass)
+    locks.set_lock_settings(locks.locks[0], close_enabled=True, close_seconds=20)
+    hass.states.async_set(DOOR, "on")
+    await hass.async_block_till_done()
+    hass.states.async_set(FRONT, "unlocked")
+    await hass.async_block_till_done()
+    await clock(60)
+    assert zwave.lock == []
+    hass.states.async_set(DOOR, "off")
+    await hass.async_block_till_done()
+    await clock(21)
+    assert [call.data["entity_id"] for call in zwave.lock] == [FRONT]
+
+
+async def test_opening_the_door_after_unlocking_cancels_the_countdown(hass, zwave, sent, clock):
+    locks = await start(hass)
+    locks.set_lock_settings(locks.locks[0], close_enabled=True, close_seconds=20)
+    hass.states.async_set(DOOR, "off")
+    await hass.async_block_till_done()
+    hass.states.async_set(FRONT, "unlocked")
+    await hass.async_block_till_done()
+    await clock(10)
+    hass.states.async_set(DOOR, "on")
+    await hass.async_block_till_done()
+    await clock(60)
+    assert zwave.lock == []
+
+
+async def test_it_does_not_lock_after_unlocking_when_it_is_off(hass, zwave, sent, clock):
+    locks = await start(hass)
+    hass.states.async_set(DOOR, "off")
+    await hass.async_block_till_done()
+    hass.states.async_set(FRONT, "unlocked")
+    await hass.async_block_till_done()
+    await clock(60)
+    assert zwave.lock == []
+
+
+async def test_in_between_states_do_not_restart_the_countdown(hass, zwave, sent, clock):
+    locks = await start(hass)
+    locks.set_lock_settings(locks.locks[0], close_enabled=True, close_seconds=20)
+    hass.states.async_set(DOOR, "off")
+    await hass.async_block_till_done()
+    hass.states.async_set(FRONT, "unlocked")
+    await hass.async_block_till_done()
+    await clock(15)
+    hass.states.async_set(FRONT, "open")
+    await hass.async_block_till_done()
+    hass.states.async_set(FRONT, "unlocked")
+    await hass.async_block_till_done()
+    await clock(6)
+    assert [call.data["entity_id"] for call in zwave.lock] == [FRONT]

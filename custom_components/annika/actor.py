@@ -462,6 +462,8 @@ def async_setup_actor(hass: HomeAssistant) -> AnnikaLastAction:
             action.entity_id,
             event.data.get(ATTR_SERVICE_DATA),
         )
+        if line is None:
+            return
         now = hass.loop.time()
         key = (line.get("entity_id"), line["message"])
         previous = last_lines.get(key)
