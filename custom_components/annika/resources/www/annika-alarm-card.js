@@ -23,8 +23,14 @@
 //   entity: alarm_control_panel.home_alarm
 //   name: Alarm                 # optional
 //   language: es                # optional; by default the Home Assistant language
+//   view_only: true             # optional; see below
 //   grid_options:
 //     columns: full
+//
+// view_only: for whoever only has to arm and disarm: the keypad (with the code)
+// and the activity, nothing else. Changing the code, the warnings, what fires,
+// the modes' times, the zones and the automatic arming are not drawn. It hides
+// the controls, it does not revoke the services: that is up to the user's role.
 
 ;(() => {
   const CARD = 'annika-alarm-card'
@@ -217,6 +223,7 @@
   class AnnikaAlarmCard extends HTMLElement {
     setConfig(config) {
       this._config = config
+      this._viewOnly = config.view_only === true
       this._code = ''
       this._action = null // arm_away | arm_night | arm_vacation | null
       this._change = null // null, or { step, current, next }
@@ -385,6 +392,7 @@
     }
 
     _startChange() {
+      if (this._viewOnly) return
       this._change = { step: 0, current: '', next: '' }
       this._code = ''
       this._error = ''
@@ -449,9 +457,11 @@
       const countdown = state === 'arming' || state === 'pending'
         ? `<span class="count" data-countdown="1">${escapeHtml(this._countdown())}</span>`
         : ''
-      const footer = this._change
-        ? `<button class="link" data-cancel="1">${escapeHtml(t.cancel)}</button>`
-        : `<button class="link" data-change="1">${escapeHtml(t.change_code)}</button>`
+      const footer = this._viewOnly
+        ? ''
+        : this._change
+          ? `<button class="link" data-cancel="1">${escapeHtml(t.cancel)}</button>`
+          : `<button class="link" data-change="1">${escapeHtml(t.change_code)}</button>`
 
       return `
         <ha-card class="keypad">
@@ -686,8 +696,8 @@
       this._structure = key
 
       const config = attrs.config
-      const side = `<div class="side">${config ? this._warningHtml(config, t) + this._firesHtml(config, t) : ''}${attrs.modes ? this._armingHtml(attrs.modes, t) : ''}</div>`
-      const zones = config && config.zones.length ? this._zonesHtml(config, t) : ''
+      const side = this._viewOnly ? '' : `<div class="side">${config ? this._warningHtml(config, t) + this._firesHtml(config, t) : ''}${attrs.modes ? this._armingHtml(attrs.modes, t) : ''}</div>`
+      const zones = !this._viewOnly && config && config.zones.length ? this._zonesHtml(config, t) : ''
       const activity = config ? this._decisionsHtml(attrs.decisions || [], t) : ''
 
       // Keep the height while the content is rebuilt (the titles arrive a moment later):
@@ -698,6 +708,8 @@
         <style>
           annika-alarm-card { display: block; container-type: inline-size; }
           .annika-alarm { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 4px 24px; align-items: start; }
+          .annika-alarm.view-only { grid-template-columns: minmax(0, 1fr); }
+          .annika-alarm.view-only .keypad { max-width: 400px; justify-self: center; width: 100%; }
           .annika-alarm .wide { grid-column: 1 / -1; }
           .annika-alarm .sec { font-size: 16px; font-weight: 500; margin: 16px 0 8px; padding: 0 4px; color: var(--primary-text-color); }
           .annika-alarm .annika-heading { display: block; }
@@ -816,11 +828,11 @@
             .annika-alarm .play { width: 32px; height: 32px; }
           }
         </style>
-        <div class="annika-alarm">
+        <div class="annika-alarm${this._viewOnly ? ' view-only' : ''}">
           ${this._keypadHtml(stateObj, t)}
           ${side}
           ${zones}
-          ${this._autoHtml(stateObj, t)}
+          ${this._viewOnly ? '' : this._autoHtml(stateObj, t)}
           ${activity}
         </div>
       `
