@@ -43,7 +43,9 @@ from homeassistant.components import websocket_api
 from homeassistant.components.websocket_api import ActiveConnection
 from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
@@ -156,6 +158,19 @@ def entity_ids_in(value: Any) -> set[str]:
     return set()
 
 
+def with_area(name: str, area_name: str | None) -> str:
+    """The name with the room in front, so a voice assistant can be told which one is meant.
+
+    Apple Home and Alexa keep their own rooms and the house cannot fill them in, but both
+    understand "turn on main bedroom lamp" when that is the device's name. A name that
+    already says the room is left as it is.
+    """
+
+    if not area_name or area_name.casefold() in name.casefold():
+        return name
+    return f"{area_name} {name}"
+
+
 def port_is_free(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         try:
@@ -174,6 +189,9 @@ class AnnikaHomeKit:
         self._store: Store = HomeKitStore(hass, STORAGE_VERSION, STORAGE_KEY)
         self._expose: set[str] = set()
         self._hide: set[str] = set()
+        # Whether the devices Siri sees carry the name of their room. A house that turned Siri on before this
+        # existed keeps the names it has: they are cached by Apple Home, so changing them would only confuse.
+        self._room_names = False
         self._reload_timer: Any = None
         self._change_listeners: list[Callable[[], None]] = []
 
@@ -181,6 +199,12 @@ class AnnikaHomeKit:
         stored = await self._store.async_load() or {}
         self._expose = set(stored.get("expose", []))
         self._hide = set(stored.get("hide", []))
+        self._room_names = bool(stored.get("room_names", False))
+
+    async def _async_save(self) -> None:
+        await self._store.async_save(
+            {"expose": sorted(self._expose), "hide": sorted(self._hide), "room_names": self._room_names}
+        )
 
     @callback
     def _entry(self) -> ConfigEntry | None:
@@ -231,6 +255,45 @@ class AnnikaHomeKit:
             ),
         }
 
+    @callback
+    def _area_name(self, entity_id: str) -> str | None:
+        """The room of a device: its own, or else the one of the physical device it belongs to."""
+
+        entry = er.async_get(self._hass).async_get(entity_id)
+        if entry is None:
+            return None
+        area_id = entry.area_id
+        if area_id is None and entry.device_id is not None:
+            device = dr.async_get(self._hass).async_get(entry.device_id)
+            area_id = device.area_id if device is not None else None
+        area = ar.async_get(self._hass).async_get_area(area_id) if area_id is not None else None
+        return area.name if area is not None else None
+
+    @callback
+    def names_with_area(self) -> dict[str, str]:
+        """The name of each device a voice assistant gets, with its room in front, where that changes it.
+
+        Siri and Alexa both read it, each deciding whether to use it.
+        """
+
+        names = {}
+        for state in self._hass.states.async_all():
+            domain = state.entity_id.split(".", 1)[0]
+            if domain not in DEFAULT_DOMAINS and state.entity_id not in self._expose:
+                continue
+            name = with_area(state.name, self._area_name(state.entity_id))
+            if name != state.name:
+                names[state.entity_id] = name
+        return names
+
+    @callback
+    def entity_config(self) -> dict[str, dict[str, str]]:
+        """What the bridge is told about each device besides whether to show it: its name, when it carries the room."""
+
+        if not self._room_names:
+            return {}
+        return {entity_id: {"name": name} for entity_id, name in self.names_with_area().items()}
+
     async def async_voice_entities(self) -> list[dict[str, Any]]:
         """Every device a voice assistant could be given, and what it gets without anyone choosing.
 
@@ -272,7 +335,7 @@ class AnnikaHomeKit:
 
         self._hide = set(hide)
         self._expose = set(expose) - self._hide
-        await self._store.async_save({"expose": sorted(self._expose), "hide": sorted(self._hide)})
+        await self._async_save()
         await self.async_sync()
         for listener in self._change_listeners:
             listener()
@@ -330,16 +393,33 @@ class AnnikaHomeKit:
             return
 
         entity_filter = self.entity_filter()
-        # An entry Home Assistant has not set up yet still carries its filter in `data`.
-        if not force and entry.options.get("filter", entry.data.get("filter")) == entity_filter:
+        entity_config = self.entity_config()
+        # An entry Home Assistant has not set up yet still carries what it was created with in `data`.
+        if (
+            not force
+            and entry.options.get("filter", entry.data.get("filter")) == entity_filter
+            and entry.options.get("entity_config", entry.data.get("entity_config", {})) == entity_config
+        ):
             return
 
         # An imported entry is not reloaded by Home Assistant when its options change.
-        self._hass.config_entries.async_update_entry(entry, options={**entry.options, "filter": entity_filter})
+        self._hass.config_entries.async_update_entry(
+            entry, options={**entry.options, "filter": entity_filter, "entity_config": entity_config}
+        )
         await self._hass.config_entries.async_reload(entry.entry_id)
 
-    async def async_enable(self) -> dict[str, str | None]:
-        """Create the bridge, if the house has none, and answer once it can be paired."""
+    async def async_enable(self, room_names: bool | None = None) -> dict[str, str | None]:
+        """Create the bridge, if the house has none, and answer once it can be paired.
+
+        `room_names` is the owner's choice of whether devices carry the name of their room; left out, the house
+        keeps the choice it has. It is applied to the names the bridge has not shown yet: Apple Home keeps the
+        ones it already has until the accessory is added again.
+        """
+
+        if room_names is not None and room_names != self._room_names:
+            self._room_names = room_names
+            await self._async_save()
+            await self.async_sync()
 
         if self._entry() is None:
             await self._hass.config_entries.flow.async_init(
@@ -349,6 +429,7 @@ class AnnikaHomeKit:
                     "name": HOMEKIT_BRIDGE_NAME,
                     "port": await self._free_port(),
                     "filter": self.entity_filter(),
+                    "entity_config": self.entity_config(),
                 },
             )
 
@@ -420,10 +501,12 @@ async def async_setup_homekit(hass: HomeAssistant, annika_config: dict) -> Annik
         connection.send_result(msg["id"], homekit.pairing())
 
     @websocket_api.require_admin
-    @websocket_api.websocket_command({vol.Required("type"): WS_TYPE_HOMEKIT_ENABLE})
+    @websocket_api.websocket_command(
+        {vol.Required("type"): WS_TYPE_HOMEKIT_ENABLE, vol.Optional("room_names"): cv.boolean}
+    )
     @websocket_api.async_response
     async def handle_enable(hass: HomeAssistant, connection: ActiveConnection, msg: dict) -> None:
-        connection.send_result(msg["id"], await homekit.async_enable())
+        connection.send_result(msg["id"], await homekit.async_enable(msg.get("room_names")))
 
     @websocket_api.require_admin
     @websocket_api.websocket_command({vol.Required("type"): WS_TYPE_HOMEKIT_UNPAIR})

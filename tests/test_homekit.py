@@ -10,6 +10,8 @@ import pytest
 from homeassistant.config_entries import SOURCE_IMPORT
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entityfilter import generate_filter
 from homeassistant.helpers.storage import Store
@@ -20,6 +22,7 @@ from custom_components.annika.homekit import (
     AnnikaHomeKit,
     async_setup_homekit,
     entity_ids_in,
+    with_area,
 )
 
 PIN = "031-45-154"
@@ -198,6 +201,7 @@ async def test_turning_siri_on_creates_the_bridge_without_anyone_editing_a_file(
         "name": "Annika",
         "port": 21063,
         "filter": filter_for(),
+        "entity_config": {},
     }
 
 
@@ -368,7 +372,11 @@ async def test_choosing_devices_before_siri_is_on_only_remembers_them(hass):
         await AnnikaHomeKit(hass, {}).async_configure([], ["light.sotano"])
 
     reload.assert_not_awaited()
-    assert await Store(hass, 2, "annika.homekit").async_load() == {"expose": [], "hide": ["light.sotano"]}
+    assert await Store(hass, 2, "annika.homekit").async_load() == {
+        "expose": [],
+        "hide": ["light.sotano"],
+        "room_names": False,
+    }
 
 
 async def test_the_backend_chooses_devices_through_the_command(hass, client):
@@ -568,3 +576,133 @@ async def test_each_device_says_which_integration_it_comes_from(hass):
     assert listed[lamp.entity_id] == ("demo", "Demo"), "the name people know it by"
     assert listed[plain.entity_id] == ("unknown_vendor", "unknown_vendor"), "an integration Home Assistant cannot name"
     assert listed["light.sin_registro"] == (None, None), "a device without a registry entry has none"
+
+
+def put_in_area(hass: HomeAssistant, entity_id: str, area_name: str, through_device: bool = False) -> None:
+    """Puts a light in a room, directly or through the physical device it belongs to."""
+
+    area = ar.async_get(hass).async_get_or_create(area_name)
+    registry = er.async_get(hass)
+    if through_device:
+        entry = MockConfigEntry(domain="hue")
+        entry.add_to_hass(hass)
+        device = dr.async_get(hass).async_get_or_create(
+            config_entry_id=entry.entry_id, identifiers={("hue", entity_id)}
+        )
+        dr.async_get(hass).async_update_device(device.id, area_id=area.id)
+        registry.async_get_or_create(
+            "light", "hue", entity_id, suggested_object_id=entity_id.split(".")[1], device_id=device.id
+        )
+    else:
+        registry.async_get_or_create("light", "hue", entity_id, suggested_object_id=entity_id.split(".")[1])
+        registry.async_update_entity(entity_id, area_id=area.id)
+    hass.states.async_set(entity_id, "on", {"friendly_name": "Lámpara"})
+
+
+def test_a_name_that_does_not_say_its_room_gets_it_in_front():
+    assert with_area("Lámpara", "Dormitorio principal") == "Dormitorio principal Lámpara"
+
+
+def test_a_name_that_already_says_its_room_is_left_alone():
+    assert with_area("Lámpara dormitorio principal", "Dormitorio Principal") == "Lámpara dormitorio principal"
+
+
+def test_a_device_without_a_room_keeps_its_name():
+    assert with_area("Lámpara", None) == "Lámpara"
+
+
+async def test_a_device_takes_the_room_of_its_own_or_of_the_device_it_belongs_to(hass):
+    put_in_area(hass, "light.lampara", "Dormitorio")
+    put_in_area(hass, "light.techo", "Living", through_device=True)
+    hass.states.async_set("light.sin_room", "on", {"friendly_name": "Escritorio"})
+
+    assert AnnikaHomeKit(hass, {}).names_with_area() == {
+        "light.lampara": "Dormitorio Lámpara",
+        "light.techo": "Living Lámpara",
+    }
+
+
+async def test_what_siri_does_not_get_is_not_renamed(hass):
+    put_in_area(hass, "light.lampara", "Dormitorio")
+    er.async_get(hass).async_get_or_create("sensor", "hue", "temp", suggested_object_id="temp")
+    area = ar.async_get(hass).async_get_area_by_name("Dormitorio")
+    er.async_get(hass).async_update_entity("sensor.temp", area_id=area.id)
+    hass.states.async_set("sensor.temp", "21", {"friendly_name": "Temperatura"})
+
+    assert set(AnnikaHomeKit(hass, {}).names_with_area()) == {"light.lampara"}
+
+
+async def test_the_room_goes_in_front_of_the_name_siri_hears_when_the_owner_chose_it(hass, flow, free_ports):
+    put_in_area(hass, "light.lampara", "Dormitorio")
+
+    await AnnikaHomeKit(hass, {}).async_enable(room_names=True)
+
+    assert flow.await_args.kwargs["data"]["entity_config"] == {"light.lampara": {"name": "Dormitorio Lámpara"}}
+
+
+async def test_the_names_stay_as_they_are_when_the_owner_did_not_choose_the_room(hass, flow, free_ports):
+    put_in_area(hass, "light.lampara", "Dormitorio")
+
+    await AnnikaHomeKit(hass, {}).async_enable(room_names=False)
+
+    assert flow.await_args.kwargs["data"]["entity_config"] == {}
+
+
+async def test_a_house_that_never_chose_keeps_the_names_it_has(hass, flow, free_ports):
+    put_in_area(hass, "light.lampara", "Dormitorio")
+
+    await AnnikaHomeKit(hass, {}).async_enable()
+
+    assert flow.await_args.kwargs["data"]["entity_config"] == {}
+
+
+async def test_the_choice_of_room_names_survives_a_restart(hass, flow, free_ports):
+    await AnnikaHomeKit(hass, {}).async_enable(room_names=True)
+
+    restarted = AnnikaHomeKit(hass, {})
+    await restarted.async_load()
+    put_in_area(hass, "light.lampara", "Dormitorio")
+
+    assert restarted.entity_config() == {"light.lampara": {"name": "Dormitorio Lámpara"}}
+
+
+async def test_choosing_room_names_on_a_bridge_that_exists_updates_and_reloads_it(hass):
+    entry = add_bridge(hass, None)
+    put_in_area(hass, "light.lampara", "Dormitorio")
+
+    with patch.object(hass.config_entries, "async_reload", AsyncMock()) as reload:
+        await AnnikaHomeKit(hass, {}).async_enable(room_names=True)
+
+    assert entry.options["entity_config"] == {"light.lampara": {"name": "Dormitorio Lámpara"}}
+    reload.assert_awaited_once_with(entry.entry_id)
+
+
+async def test_a_bridge_whose_names_are_already_right_is_not_reloaded(hass):
+    entry = add_bridge(hass, None)
+    put_in_area(hass, "light.lampara", "Dormitorio")
+    homekit = AnnikaHomeKit(hass, {})
+    await homekit.async_enable(room_names=True)
+
+    with patch.object(hass.config_entries, "async_reload", AsyncMock()) as reload:
+        await homekit.async_enable(room_names=True)
+
+    reload.assert_not_awaited()
+    assert entry.options["entity_config"] == {"light.lampara": {"name": "Dormitorio Lámpara"}}
+
+
+async def test_the_owner_chooses_room_names_through_the_command(hass, client, flow, free_ports):
+    put_in_area(hass, "light.lampara", "Dormitorio")
+
+    await client.send_json({"id": 1, "type": "annika/homekit_enable", "room_names": True})
+    response = await client.receive_json()
+
+    assert response["success"]
+    assert flow.await_args.kwargs["data"]["entity_config"] == {"light.lampara": {"name": "Dormitorio Lámpara"}}
+
+
+async def test_a_malformed_choice_of_room_names_is_refused(hass, client, flow, free_ports):
+    await client.send_json({"id": 1, "type": "annika/homekit_enable", "room_names": "maybe"})
+    response = await client.receive_json()
+
+    assert not response["success"]
+    flow.assert_not_awaited()

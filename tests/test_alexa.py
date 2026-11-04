@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 from homeassistant.loader import IntegrationNotFound
@@ -239,7 +240,7 @@ async def test_a_house_without_alexa_ignores_new_devices(hass, alexa, quick_refr
 async def test_the_house_remembers_that_alexa_is_on(hass, client):
     await command(client, "annika/alexa_enable")
 
-    assert await Store(hass, 1, "annika.alexa").async_load() == {"enabled": True}
+    assert await Store(hass, 1, "annika.alexa").async_load() == {"enabled": True, "room_names": False}
 
     restarted = AnnikaAlexa(hass, AnnikaHomeKit(hass, {}))
     await restarted.async_load()
@@ -304,3 +305,98 @@ async def test_annika_keeps_running_when_the_endpoint_cannot_be_updated(hass, ho
         await async_setup_alexa_endpoint(hass)
 
     sync.assert_awaited_once()
+
+
+async def friendly_names(hass_client) -> dict[str, str]:
+    response = await hass_client.post(ENDPOINT, json=DISCOVERY)
+    body = await response.json()
+    return {
+        endpoint["endpointId"].replace("#", "."): endpoint["friendlyName"]
+        for endpoint in body["event"]["payload"]["endpoints"]
+    }
+
+
+def put_in_room(hass: HomeAssistant, entity_id: str, area_name: str, name: str = "Lámpara") -> None:
+    registry = er.async_get(hass)
+    registry.async_get_or_create("light", "hue", entity_id, suggested_object_id=entity_id.split(".")[1])
+    registry.async_update_entity(entity_id, area_id=ar.async_get(hass).async_get_or_create(area_name).id)
+    add_light(hass, entity_id, name)
+
+
+async def test_the_room_goes_in_front_of_the_name_alexa_hears_when_the_owner_chose_it(hass, client, hass_client):
+    put_in_room(hass, "light.lampara", "Dormitorio principal")
+    add_light(hass, "light.escritorio", "Escritorio")
+
+    await command(client, "annika/alexa_enable", room_names=True)
+
+    assert await friendly_names(await hass_client()) == {
+        "light.lampara": "Dormitorio principal Lámpara",
+        "light.escritorio": "Escritorio",
+    }
+
+
+async def test_the_names_stay_as_they_are_when_the_owner_did_not_choose_the_room(hass, client, hass_client):
+    put_in_room(hass, "light.lampara", "Dormitorio principal")
+
+    await command(client, "annika/alexa_enable", room_names=False)
+
+    assert await friendly_names(await hass_client()) == {"light.lampara": "Lámpara"}
+
+
+async def test_a_house_that_never_chose_keeps_the_names_it_has(hass, client, hass_client):
+    put_in_room(hass, "light.lampara", "Dormitorio principal")
+
+    await command(client, "annika/alexa_enable")
+
+    assert await friendly_names(await hass_client()) == {"light.lampara": "Lámpara"}
+
+
+async def test_a_name_that_already_says_its_room_is_not_repeated_for_alexa(hass, client, hass_client):
+    put_in_room(hass, "light.lampara", "Dormitorio", name="Lámpara dormitorio")
+
+    await command(client, "annika/alexa_enable", room_names=True)
+
+    assert await friendly_names(await hass_client()) == {"light.lampara": "Lámpara dormitorio"}
+
+
+async def test_the_choice_of_room_names_changes_what_alexa_hears_without_restarting_anything(
+    hass, client, hass_client
+):
+    put_in_room(hass, "light.lampara", "Dormitorio")
+    await command(client, "annika/alexa_enable", room_names=False)
+    assert await friendly_names(await hass_client()) == {"light.lampara": "Lámpara"}
+
+    await command(client, "annika/alexa_enable", room_names=True)
+
+    assert await friendly_names(await hass_client()) == {"light.lampara": "Dormitorio Lámpara"}
+
+
+async def test_the_house_remembers_the_choice_of_room_names(hass, client):
+    await command(client, "annika/alexa_enable", room_names=True)
+
+    assert await Store(hass, 1, "annika.alexa").async_load() == {"enabled": True, "room_names": True}
+
+
+async def test_a_house_that_chose_room_names_hears_them_again_after_a_restart(hass, homekit, hass_client):
+    await Store(hass, 1, "annika.alexa").async_save({"enabled": True, "room_names": True})
+    put_in_room(hass, "light.lampara", "Dormitorio")
+    restarted = await async_setup_alexa(hass, homekit)
+
+    await restarted.async_sync()
+
+    assert await friendly_names(await hass_client()) == {"light.lampara": "Dormitorio Lámpara"}
+
+
+async def test_a_house_where_alexa_cannot_open_does_not_remember_the_choice_of_room_names(hass, client):
+    with patch("custom_components.annika.alexa.async_get_integration", side_effect=IntegrationNotFound("alexa")):
+        response = await command(client, "annika/alexa_enable", room_names=True)
+
+    assert not response["success"]
+    assert await Store(hass, 1, "annika.alexa").async_load() is None
+
+
+async def test_a_malformed_choice_of_room_names_is_refused_for_alexa(hass, client):
+    response = await command(client, "annika/alexa_enable", room_names="maybe")
+
+    assert not response["success"]
+    assert await Store(hass, 1, "annika.alexa").async_load() is None

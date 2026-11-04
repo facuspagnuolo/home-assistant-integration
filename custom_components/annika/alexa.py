@@ -32,6 +32,7 @@ import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.components.websocket_api import ActiveConnection
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entityfilter import generate_filter
 from homeassistant.helpers.event import async_call_later
@@ -71,6 +72,9 @@ class AnnikaAlexa:
         self._homekit = homekit
         self._store: Store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._enabled = False
+        # Whether the devices Alexa discovers carry the name of their room. A house that turned Alexa on before this
+        # existed keeps the names it has.
+        self._room_names = False
         self._config: Any = None
         self._serving = asyncio.Lock()
         self._reload_timer: Any = None
@@ -78,22 +82,33 @@ class AnnikaAlexa:
     async def async_load(self) -> None:
         stored = await self._store.async_load() or {}
         self._enabled = bool(stored.get("enabled", False))
+        self._room_names = bool(stored.get("room_names", False))
 
     @callback
     def status(self) -> dict[str, str]:
         return {"state": STATE_ENABLED if self._enabled else STATE_DISABLED}
 
-    async def async_enable(self) -> dict[str, str]:
+    async def async_enable(self, room_names: bool | None = None) -> dict[str, str]:
         """Open the endpoint, if the house has none, and remember it so it opens again after a restart.
+
+        `room_names` is the owner's choice of whether devices carry the name of their room; left out, the house
+        keeps the choice it has. Alexa reads the names again the next time it discovers devices.
 
         Remembered only once the endpoint answers: a house where it could not be
         opened is not told it is enabled.
         """
 
-        await self._async_serve()
-        if not self._enabled:
+        previous = self._room_names
+        if room_names is not None:
+            self._room_names = room_names
+        try:
+            await self._async_serve()
+        except Exception:
+            self._room_names = previous
+            raise
+        if not self._enabled or self._room_names != previous:
             self._enabled = True
-            await self._store.async_save({"enabled": True})
+            await self._store.async_save({"enabled": True, "room_names": self._room_names})
         return self.status()
 
     async def async_sync(self) -> None:
@@ -123,9 +138,18 @@ class AnnikaAlexa:
             """Home Assistant's Alexa configuration, with a filter that can change while it runs."""
 
             _exposes = staticmethod(expose_nothing)
+            _names: dict[str, dict[str, str]] = {}
 
             def set_filter(self, entity_filter: Any) -> None:
                 self._exposes = entity_filter
+
+            def set_names(self, names: dict[str, dict[str, str]]) -> None:
+                self._names = names
+
+            @property
+            def entity_config(self) -> dict[str, Any]:
+                # What Home Assistant's Alexa reads to name each device when it answers discovery.
+                return self._names
 
             @callback
             def should_expose(self, entity_id: str) -> bool:
@@ -146,7 +170,7 @@ class AnnikaAlexa:
 
     @callback
     def refresh(self) -> None:
-        """Expose what Siri exposes: the default, with what the backend added and took away.
+        """Expose what Siri exposes: the default, with what the backend added and took away, under the names it chose.
 
         Home Assistant reads an empty filter as "everything", so this one is
         always built with the default domains.
@@ -162,6 +186,11 @@ class AnnikaAlexa:
                 [],
                 entity_filter["exclude_entities"],
             )
+        )
+        self._config.set_names(
+            {entity_id: {"name": name} for entity_id, name in self._homekit.names_with_area().items()}
+            if self._room_names
+            else {}
         )
 
     @callback
@@ -202,10 +231,12 @@ async def async_setup_alexa(hass: HomeAssistant, homekit: AnnikaHomeKit) -> Anni
         connection.send_result(msg["id"], alexa.status())
 
     @websocket_api.require_admin
-    @websocket_api.websocket_command({vol.Required("type"): WS_TYPE_ALEXA_ENABLE})
+    @websocket_api.websocket_command(
+        {vol.Required("type"): WS_TYPE_ALEXA_ENABLE, vol.Optional("room_names"): cv.boolean}
+    )
     @websocket_api.async_response
     async def handle_enable(hass: HomeAssistant, connection: ActiveConnection, msg: dict) -> None:
-        connection.send_result(msg["id"], await alexa.async_enable())
+        connection.send_result(msg["id"], await alexa.async_enable(msg.get("room_names")))
 
     websocket_api.async_register_command(hass, handle_status)
     websocket_api.async_register_command(hass, handle_enable)
