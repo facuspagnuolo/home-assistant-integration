@@ -35,8 +35,9 @@ It can also arm and disarm itself:
 From `auto_arm.time` on, the panel arms as soon as none of the sensors has been
 active for `quiet_minutes` in a row, so nobody gets locked in the dark while
 still walking around. The times, the minutes and whether each runs are plain
-entities, restored across restarts and editable from the card; the YAML is
-only where they start.
+entities, restored across restarts and editable from the card. So is the group of
+sensors (kept in the panel's store, since a list is not one entity's state); the
+YAML is only where they start.
 
 States: disarmed, arming (counting down to a mode), armed_away / armed_night /
 armed_vacation, pending (tripped, the person still has time to disarm) and
@@ -231,7 +232,10 @@ class AnnikaAlarmPanel:
         self.has_auto_arm = auto_arm is not None
         self.has_auto_disarm = auto_disarm is not None
         self.auto_arm_mode: str = auto_arm["mode"] if auto_arm else "night"
-        self.auto_arm_sensors: list[str] = auto_arm["sensors"] if auto_arm else []
+        self.auto_arm_sensors: list[str] = list(auto_arm["sensors"]) if auto_arm else []
+        # Set once the person picks the group from the card: from then on it, and not the
+        # YAML, says which sensors count (an empty group is a choice too).
+        self._sensors_from_card = False
         self.auto_arm_enabled = self.has_auto_arm
         self.auto_arm_time: dt_time = auto_arm["time"] if auto_arm else dt_time(23, 0)
         self.auto_arm_quiet: int = auto_arm["quiet_minutes"] if auto_arm else 0
@@ -292,6 +296,13 @@ class AnnikaAlarmPanel:
             for mode, value in stored_enabled.items():
                 self.modes[mode]["enabled"] = value
         self._fix_auto_modes()
+        stored_sensors = data.get("auto_sensors")
+        if self.has_auto_arm and isinstance(stored_sensors, list):
+            self.auto_arm_sensors = list(dict.fromkeys(
+                entity for entity in stored_sensors
+                if isinstance(entity, str) and entity.startswith("binary_sensor.")
+            ))
+            self._sensors_from_card = True
         stored = data.get("hash")
         self._code_is_initial = data.get("initial", True)
         if stored and not self._code_is_initial:
@@ -300,6 +311,14 @@ class AnnikaAlarmPanel:
             # Still the code from the YAML: follow it when the YAML changes.
             await self._async_set_code(self._initial_code, initial=True)
         self._schedule_clocks()
+        self._track_sensors()
+
+    def _track_sensors(self) -> None:
+        """Listen to the sensors of the group, and to no other."""
+
+        if self._cancel_sensors is not None:
+            self._cancel_sensors()
+            self._cancel_sensors = None
         if self.auto_arm_sensors:
             self._cancel_sensors = async_track_state_change_event(
                 self.hass, self.auto_arm_sensors, self._sensor_changed
@@ -427,6 +446,7 @@ class AnnikaAlarmPanel:
             "hash": self._hash,
             "initial": self._code_is_initial,
             "modes": self.modes,
+            **({"auto_sensors": self.auto_arm_sensors} if self._sensors_from_card else {}),
         }
 
     @property
@@ -534,6 +554,27 @@ class AnnikaAlarmPanel:
             self._evaluate_quiet()
         self._notify()
 
+    def set_auto_sensors(self, sensors: list[str]) -> None:
+        """Choose the sensors whose silence the automatic arming waits for.
+
+        None at all means it arms at its time. If it is already waiting, the count
+        of quiet minutes starts over: it is not the same group any more.
+        """
+
+        if not self.has_auto_arm:
+            raise ValueError("auto_arm")
+        chosen = list(dict.fromkeys(sensors))
+        if any(not entity.startswith("binary_sensor.") for entity in chosen):
+            raise ValueError("sensors")
+        self.auto_arm_sensors = chosen
+        self._sensors_from_card = True
+        self._track_sensors()
+        self._store.async_delay_save(self._data, 1)
+        if self.auto_arm_waiting:
+            self._quiet_since = None
+            self._evaluate_quiet()
+        self._notify()
+
     def _schedule_clocks(self) -> None:
         for cancel in (self._cancel_arm_clock, self._cancel_disarm_clock):
             if cancel is not None:
@@ -594,7 +635,9 @@ class AnnikaAlarmPanel:
         now = dt_util.utcnow()
         if self._quiet_since is None:
             self._quiet_since = now
-        due = self._quiet_since + timedelta(minutes=self.auto_arm_quiet)
+        # Without a group there is nothing to be quiet: it arms at its time.
+        quiet = self.auto_arm_quiet if self.auto_arm_sensors else 0
+        due = self._quiet_since + timedelta(minutes=quiet)
         if due <= now:
             self._stop_waiting()
             self.arm(self.auto_arm_mode, skip_code=True, source="auto")

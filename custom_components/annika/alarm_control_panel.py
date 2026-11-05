@@ -14,7 +14,9 @@ from homeassistant.components.alarm_control_panel import (
     AlarmControlPanelState,
     CodeFormat,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.components import websocket_api
+from homeassistant.components.websocket_api import ActiveConnection
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_platform
@@ -47,11 +49,13 @@ from .alarm_panel_entities import (
     unique_id,
 )
 from .const import DOMAIN
+from .motion_sensors import sensor_choices
 from homeassistant.helpers import entity_registry as er
 
 _LOGGER = logging.getLogger(__name__)
 
 SERVICE_CHANGE_CODE = "change_code"
+WS_TYPE_SENSOR_OPTIONS = "annika/alarm_sensor_options"
 
 _STATES = {
     STATE_DISARMED: AlarmControlPanelState.DISARMED,
@@ -76,6 +80,13 @@ async def async_setup_platform(
         await panel.rules.async_load()
     async_add_entities([AnnikaAlarmControlPanel(panel)])
 
+    @websocket_api.websocket_command({vol.Required("type"): WS_TYPE_SENSOR_OPTIONS})
+    @callback
+    def handle_sensor_options(hass: HomeAssistant, connection: ActiveConnection, msg: dict) -> None:
+        connection.send_result(msg["id"], sensor_choices(hass))
+
+    websocket_api.async_register_command(hass, handle_sensor_options)
+
     platform = entity_platform.async_get_current_platform()
     platform.async_register_entity_service(
         SERVICE_CHANGE_CODE,
@@ -93,6 +104,11 @@ async def async_setup_platform(
             vol.Optional("pending"): vol.All(vol.Coerce(int), vol.Range(min=0, max=MAX_SECONDS)),
         },
         "async_set_timing",
+    )
+    platform.async_register_entity_service(
+        "set_auto_arm_sensors",
+        {vol.Required("sensors"): vol.All(cv.ensure_list, [cv.entity_id])},
+        "async_set_auto_arm_sensors",
     )
     platform.async_register_entity_service(
         "set_mode_enabled",
@@ -244,6 +260,10 @@ class AnnikaAlarmControlPanel(AlarmControlPanelEntity, RestoreEntity):
                 "mode": panel.auto_arm_mode,
                 "waiting": panel.auto_arm_waiting,
                 "has_sensors": bool(panel.auto_arm_sensors),
+                # The group the arming waits on. What it can be made of is asked for when the
+                # card needs it (annika/alarm_sensor_options): a list kept here would be built
+                # before the cameras and the rest are loaded, and would stay without them.
+                "sensors": list(panel.auto_arm_sensors),
                 "enabled": find("switch", AUTO_ARM_ENABLED),
                 "time": find("time", AUTO_ARM_TIME),
                 "quiet_minutes": find("number", AUTO_ARM_QUIET),
@@ -318,6 +338,10 @@ async def _async_set_mode_enabled(self, mode, enabled):
     await self._run(lambda: self._panel.set_mode_enabled(mode, enabled))
 
 
+async def _async_set_auto_arm_sensors(self, sensors):
+    _guard(lambda: self._panel.set_auto_sensors(sensors))
+
+
 async def _async_set_rule(self, target, id, mode, rule):
     _guard(lambda: _rules(self).set_rule(target, id, mode, rule))
 
@@ -340,6 +364,7 @@ async def _async_test_output(self, output):
 
 AnnikaAlarmControlPanel.async_set_timing = _async_set_timing
 AnnikaAlarmControlPanel.async_set_mode_enabled = _async_set_mode_enabled
+AnnikaAlarmControlPanel.async_set_auto_arm_sensors = _async_set_auto_arm_sensors
 AnnikaAlarmControlPanel.async_set_rule = _async_set_rule
 AnnikaAlarmControlPanel.async_set_output = _async_set_output
 AnnikaAlarmControlPanel.async_set_warning = _async_set_warning

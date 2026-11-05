@@ -114,7 +114,14 @@
       auto_disarm: 'Disarm automatically',
       at: 'at',
       in_mode: 'in mode',
-      quiet: 'once no sensor has been active for',
+      quiet_before: 'once none of',
+      quiet_after: 'has been active for',
+      no_sensors: 'Without waiting for sensors',
+      choose_sensors: 'Choose sensors',
+      motion_sensors: 'Motion sensors',
+      motion_sensors_n: '{n} motion sensors',
+      motion_hint: 'It arms once none of the selected sensors has been active for the time you set. With none selected, it arms at the time.',
+      no_motion_sensors: 'No motion sensors found',
       minutes: 'min',
       waiting: 'Waiting for the house to go quiet',
     },
@@ -196,7 +203,14 @@
       auto_disarm: 'Desarmar automáticamente',
       at: 'a las',
       in_mode: 'en modo',
-      quiet: 'cuando ningún sensor estuvo activo por',
+      quiet_before: 'cuando ninguno de',
+      quiet_after: 'estuvo activo por',
+      no_sensors: 'Sin esperar sensores',
+      choose_sensors: 'Elegir sensores',
+      motion_sensors: 'Sensores de movimiento',
+      motion_sensors_n: '{n} sensores de movimiento',
+      motion_hint: 'Arma cuando ninguno de los sensores elegidos estuvo activo durante el tiempo que indiques. Sin ninguno, arma a la hora indicada.',
+      no_motion_sensors: 'No se encontraron sensores de movimiento',
       minutes: 'min',
       waiting: 'Esperando a que la casa se quede en calma',
     },
@@ -274,10 +288,22 @@
 
     connectedCallback() {
       this._timer = setInterval(() => this._tick(), 1000)
+      this._outside = (event) => {
+        if (this._sensorsOpen && !event.composedPath().some((el) => el.classList && (el.classList.contains('popover') || (el.dataset && el.dataset.autoSensors !== undefined)))) {
+          this._sensorsOpen = false
+          this._render(true)
+        }
+      }
+      document.addEventListener('click', this._outside)
     }
 
     disconnectedCallback() {
       clearInterval(this._timer)
+      document.removeEventListener('click', this._outside)
+      if (this._popObserver) {
+        this._popObserver.disconnect()
+        this._popObserver = null
+      }
     }
 
     get _texts() {
@@ -644,10 +670,13 @@
         const modeControl = a.mode_entity
           ? selectBox(`<select data-select="${escapeHtml(a.mode_entity)}">${this._modes.map((m) => `<option value="${m}"${m === mode ? ' selected' : ''}>${escapeHtml(t['mode_' + m])}</option>`).join('')}</select>`)
           : `<b>${escapeHtml(t['mode_' + mode] || mode)}</b>`
-        const quiet = a.has_sensors
-          ? `<span class="quiet">${escapeHtml(t.quiet)}</span>
+        const chosen = a.sensors || []
+        const picker = `<button class="dd${chosen.length ? '' : ' empty'}" data-auto-sensors>${escapeHtml(this._sensorsLabel(a, t))}</button>`
+        // The sensors are the group the quiet minutes count over: with none, it arms at its time.
+        const quiet = chosen.length
+          ? `<span class="quiet">${escapeHtml(t.quiet_before)}</span>${picker}<span>${escapeHtml(t.quiet_after)}</span>
              <input type="number" min="0" max="240" data-number="${escapeHtml(a.quiet_minutes || '')}" value="${escapeHtml(minutes)}"><span>${escapeHtml(t.minutes)}</span>`
-          : ''
+          : picker
         html += `<div class="auto-row">${check(a.enabled)}<span>${escapeHtml(t.auto_arm)} ${escapeHtml(t.at)}</span>
           <input type="time" data-time="${escapeHtml(a.time || '')}" value="${clock(a.time)}">
           <span>${escapeHtml(t.in_mode)}</span>${modeControl}${quiet}</div>`
@@ -664,6 +693,92 @@
           <span>${escapeHtml(t.in_mode)}</span>${dModeControl}</div>`
       }
       return html + '</div>'
+    }
+
+    // What a sensor is called in the list: its own name as Home Assistant has it right now, under the
+    // alarm's name for it when that covers several ("Camara 1 · RP-PCB8M Person"). Never the entity id.
+    _sensorName(option) {
+      const state = this._hass && this._hass.states[option.entity]
+      const own = (state && state.attributes.friendly_name) || option.name
+      return option.group ? `${option.group} · ${own}` : own
+    }
+
+    // What the group can be made of is asked for, not read from the panel: it has to be what
+    // Home Assistant has now (the cameras load after the panel does).
+    _sensorChoices(arm) {
+      return this._sensorOptions || arm.sensor_options || []
+    }
+
+    _loadSensorOptions(refresh) {
+      if (this._optionsLoading || this._optionsFailed || (this._sensorOptions && !refresh)) return
+      if (!this._hass || typeof this._hass.callWS !== 'function') return
+      this._optionsLoading = true
+      this._hass.callWS({ type: 'annika/alarm_sensor_options' })
+        .then((options) => {
+          this._optionsLoading = false
+          if (Array.isArray(options)) this._sensorOptions = options
+          this._render(true)
+        })
+        .catch(() => {
+          this._optionsLoading = false
+          this._optionsFailed = true
+        })
+    }
+
+    _sensorsLabel(arm, t) {
+      const options = this._sensorChoices(arm)
+      const names = (arm.sensors || []).map((entity) => {
+        const option = options.find((item) => item.entity === entity)
+        return option ? this._sensorName(option) : this._sensorName({ entity, name: this._readable(entity) })
+      })
+      if (!names.length) return t.no_sensors
+      return names.length <= 2 ? names.join(', ') : fill(t.motion_sensors_n, { n: names.length })
+    }
+
+    _readable(entity) {
+      return entity.split('.').slice(1).join('.').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+    }
+
+    // The sensors the automatic arming waits on, in a box under their dropdown, like the heating schedule's.
+    _sensorsPopoverHtml(stateObj, t) {
+      if (!this._sensorsOpen) return ''
+      const arm = (stateObj.attributes.auto || {}).arm
+      if (!arm) return ''
+      const chosen = arm.sensors || []
+      const options = this._sensorChoices(arm)
+      const known = options.map((item) => item.entity)
+      const sensors = [...options, ...chosen.filter((entity) => !known.includes(entity)).map((entity) => ({ entity, name: this._readable(entity) }))]
+      const rows = sensors.length
+        ? sensors
+          .map((sensor) => `<label class="pop-row"><input type="checkbox" class="annika-check" data-pop-sensor="${escapeHtml(sensor.entity)}"${chosen.includes(sensor.entity) ? ' checked' : ''}> ${escapeHtml(this._sensorName(sensor))}</label>`)
+          .join('')
+        : `<div class="pop-row muted">${escapeHtml(t.no_motion_sensors)}</div>`
+      return `<div class="popover" data-popover><div class="pop-title">${escapeHtml(t.motion_sensors)}</div><div class="pop-sub">${escapeHtml(t.motion_hint)}</div>${rows}</div>`
+    }
+
+    _placePopover() {
+      if (this._popObserver) {
+        this._popObserver.disconnect()
+        this._popObserver = null
+      }
+      const host = this.querySelector('.annika-alarm')
+      if (!this._sensorsOpen || !host) return
+      // Placed inside the card, not on the window: a card with containment makes `fixed` relative to itself.
+      const place = () => {
+        const pop = this.querySelector('[data-popover]')
+        const anchor = this.querySelector('[data-auto-sensors]')
+        if (!pop || !anchor || !anchor.getBoundingClientRect) return
+        const box = anchor.getBoundingClientRect()
+        const area = host.getBoundingClientRect()
+        pop.style.left = `${Math.max(0, Math.min(box.left - area.left, area.width - pop.offsetWidth))}px`
+        pop.style.top = `${box.bottom - area.top + 6}px`
+      }
+      place()
+      // The rest of the card is mounted after this render and moves the row: follow its size.
+      if (typeof ResizeObserver === 'function') {
+        this._popObserver = new ResizeObserver(place)
+        this._popObserver.observe(host)
+      }
     }
 
     _autoKey(stateObj) {
@@ -690,7 +805,7 @@
       const key = JSON.stringify([
         stateObj.state, attrs.mode, attrs.locked_until, attrs.config, attrs.modes, attrs.decisions,
         this._action, this._change && this._change.step, this._code.length, this._error, this._notice,
-        this._busy, t.disarm, this._autoKey(stateObj),
+        this._busy, t.disarm, this._autoKey(stateObj), this._sensorsOpen, this._sensorOptions,
       ])
       if (!force && key === this._structure) return
       this._structure = key
@@ -707,7 +822,7 @@
       this.innerHTML = `
         <style>
           annika-alarm-card { display: block; container-type: inline-size; }
-          .annika-alarm { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 4px 24px; align-items: start; }
+          .annika-alarm { position: relative; display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 4px 24px; align-items: start; }
           .annika-alarm.view-only { grid-template-columns: minmax(0, 1fr); }
           .annika-alarm.view-only .keypad { max-width: 400px; justify-self: center; width: 100%; }
           .annika-alarm .wide { grid-column: 1 / -1; }
@@ -803,6 +918,14 @@
           .annika-alarm .auto-row.sub { padding-left: 30px; color: var(--secondary-text-color); }
           .annika-alarm .auto-row .quiet { margin-left: 12px; }
           .annika-alarm .auto-row.waiting { color: var(--primary-color); }
+          .annika-alarm .dd { position: relative; display: inline-flex; align-items: center; max-width: 100%; height: 34px; padding: 0 32px 0 12px; border: 0; border-radius: 12px; background: color-mix(in srgb, var(--disabled-color) 20%, transparent); color: var(--primary-text-color); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+          .annika-alarm .dd.empty { color: var(--secondary-text-color); }
+          .annika-alarm .dd::after { content: ''; position: absolute; top: 50%; right: 6px; width: 24px; height: 24px; margin-top: -12px; pointer-events: none; background: var(--secondary-text-color); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M7,10L12,15L17,10H7Z'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M7,10L12,15L17,10H7Z'/%3E%3C/svg%3E") center / contain no-repeat; }
+          .annika-alarm .popover { position: absolute; z-index: 10; width: 320px; max-width: calc(100vw - 24px); max-height: 60vh; overflow: auto; background: var(--card-background-color, #121415); border: 1px solid rgba(255,255,255,.12); box-shadow: 0 12px 32px rgba(0,0,0,.6); padding: 12px 14px; box-sizing: border-box; }
+          .annika-alarm .pop-title { font-weight: 500; }
+          .annika-alarm .pop-sub { color: var(--secondary-text-color); font-size: 12px; margin: 2px 0 8px; }
+          .annika-alarm .pop-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid var(--divider-color); cursor: pointer; }
+          .annika-alarm .pop-row.muted { color: var(--secondary-text-color); cursor: default; }
 
           @container (max-width: 800px) {
             .annika-alarm { grid-template-columns: minmax(0, 1fr); }
@@ -834,9 +957,12 @@
           ${zones}
           ${this._viewOnly ? '' : this._autoHtml(stateObj, t)}
           ${activity}
+          ${this._viewOnly ? '' : this._sensorsPopoverHtml(stateObj, t)}
         </div>
       `
       this._bind()
+      this._placePopover()
+      if (!this._viewOnly && attrs.auto && attrs.auto.arm) this._loadSensorOptions()
       this._headings().then(() => requestAnimationFrame(() => { this.style.minHeight = '' }))
     }
 
@@ -900,6 +1026,17 @@
         hass.callService('switch', el.checked ? 'turn_on' : 'turn_off', { entity_id: el.dataset.switch }))
       on('[data-time]', 'change', (el) => {
         if (el.value) hass.callService('time', 'set_value', { entity_id: el.dataset.time, time: `${el.value}:00` })
+      })
+      this.querySelectorAll('[data-auto-sensors]').forEach((el) => el.addEventListener('click', (event) => {
+        event.stopPropagation()
+        this._sensorsOpen = !this._sensorsOpen
+        // A sensor may have appeared since the list was asked for.
+        if (this._sensorsOpen) this._loadSensorOptions(true)
+        this._render(true)
+      }))
+      on('[data-pop-sensor]', 'change', () => {
+        const sensors = [...this.querySelectorAll('[data-pop-sensor]')].filter((box) => box.checked).map((box) => box.dataset.popSensor)
+        this._service('set_auto_arm_sensors', { sensors })
       })
       on('[data-number]', 'change', (el) => {
         if (el.value !== '') hass.callService('number', 'set_value', { entity_id: el.dataset.number, value: Number(el.value) })

@@ -165,6 +165,15 @@ set_timing:
     mode: {name: Mode, required: true, selector: {select: {options: [away, night, vacation]}}}
     arming: {name: Arming seconds, selector: {number: {min: 0, max: 600}}}
     pending: {name: Delay seconds, selector: {number: {min: 0, max: 600}}}
+set_auto_arm_sensors:
+  name: Set the sensors the automatic arming waits for
+  description: The binary sensors that must stay quiet, for the minutes set, before the alarm arms itself after its time. None means it arms at its time.
+  target:
+    entity:
+      integration: annika
+      domain: alarm_control_panel
+  fields:
+    sensors: {name: Sensors, required: true, selector: {entity: {multiple: true, domain: binary_sensor}}}
 set_mode_enabled:
   name: Enable or disable an alarm mode
   description: A disabled mode cannot be armed and is hidden from the card. The last enabled mode cannot be disabled; a panel armed in the mode is disarmed.

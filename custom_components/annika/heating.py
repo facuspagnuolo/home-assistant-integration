@@ -70,9 +70,9 @@ from homeassistant.helpers.event import async_track_state_change_event, async_tr
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from .alarm_panel import DATA_ALARM_PANEL
 from .cameras import slug
 from .const import DOMAIN
+from .motion_sensors import alarm_sensors, motion_sensors
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -104,9 +104,6 @@ def day_keys(mode: str) -> tuple[str, ...]:
 
 OFF = "off"
 
-MOTION_CLASSES = ("motion", "occupancy", "presence")
-# What the alarm watches that is not somebody moving about the house.
-CONTACT_CLASSES = ("door", "garage_door", "window", "opening", "lock", "vibration", "tamper", "safety")
 
 _CLIMATE = vol.All(cv.entity_id, vol.Match(r"^climate\."))
 _BINARY = vol.All(cv.entity_id, vol.Match(r"^binary_sensor\."))
@@ -862,44 +859,12 @@ class AnnikaHeating:
         return {"master": registry.async_get_entity_id("switch", DOMAIN, f"{DOMAIN}_heating_enabled")}
 
     def _motion_sensors(self) -> list[dict[str, str]]:
-        """What a slot can wait on: the sensors that say motion, and the ones of the alarm.
-
-        The alarm's sensors (Kitchen, Living...) usually come from a panel that gives them no
-        device class, so the class alone would leave out the ones the house is known by.
-        """
-        found: dict[str, str] = {}
-        for state in self.hass.states.async_all("binary_sensor"):
-            if state.attributes.get("device_class") not in MOTION_CLASSES:
-                continue
-            # Annika's own twin of an alarm sensor goes quiet when the zone is disabled, which
-            # would read as "no motion" for ever. The sensor it follows is listed instead.
-            if state.attributes.get("source_entity_id"):
-                continue
-            found[state.entity_id] = state.attributes.get("friendly_name") or state.entity_id
-        for entity_id, name in self._alarm_sensors().items():
-            found[entity_id] = name
-        return sorted(
-            ({"entity": entity, "name": name} for entity, name in found.items()),
-            key=lambda item: item["name"].lower(),
-        )
+        """What a slot can wait on. See motion_sensors.py."""
+        return motion_sensors(self.hass)
 
     def _alarm_sensors(self) -> dict[str, str]:
         """The motion sensors of the alarm zones, by entity, under the name the alarm gives them."""
-        panel = self.hass.data.get(DATA_ALARM_PANEL)
-        rules = getattr(panel, "rules", None)
-        found: dict[str, str] = {}
-        for zone in getattr(rules, "zones", []):
-            for sensor in zone.sensors:
-                for entity_id in sensor.entities:
-                    if not entity_id.startswith("binary_sensor."):
-                        continue
-                    state = self.hass.states.get(entity_id)
-                    kind = (state.attributes.get("device_class") if state else None) or sensor.detail
-                    if kind in CONTACT_CLASSES:
-                        continue
-                    friendly = (state.attributes.get("friendly_name") if state else None) or entity_id
-                    found[entity_id] = sensor.name if len(sensor.entities) == 1 else f"{sensor.name} · {friendly}"
-        return found
+        return alarm_sensors(self.hass)
 
     def _slot_view(self, slot: dict[str, Any]) -> dict[str, Any]:
         return {

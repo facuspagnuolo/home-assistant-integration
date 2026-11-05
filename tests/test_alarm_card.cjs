@@ -24,9 +24,21 @@ function panel(state = 'disarmed') {
         zones: [{ id: 'planta_baja', name: 'Planta baja', rules: { away: 'trigger', night: 'off' }, sensors: [{ id: 'cocina', name: 'Cocina', detail: '', entities: [], rules: { away: null, night: null } }] }],
       },
       decisions: [{ level: 'trigger', text: 'Se disparó por Cocina', time: new Date().toISOString() }],
-      auto: { arm: { enabled: 'switch.auto_arm', time: 'time.auto_arm', mode: 'away', has_sensors: false } },
+      auto: { arm: { enabled: 'switch.auto_arm', time: 'time.auto_arm', mode: 'away', has_sensors: false, sensors: [], sensor_options: [] } },
     },
   }
+}
+
+const OPTIONS = [
+  { entity: 'binary_sensor.cocina', name: 'Cocina' },
+  { entity: 'binary_sensor.living', name: 'Living' },
+  { entity: 'binary_sensor.patio', name: 'Patio' },
+]
+
+function withSensors(sensors) {
+  const state = panel()
+  Object.assign(state.attributes.auto.arm, { has_sensors: sensors.length > 0, quiet_minutes: 'number.quiet', sensors, sensor_options: OPTIONS })
+  return state
 }
 
 function render(config, state) {
@@ -86,4 +98,94 @@ test('view_only cannot start a code change', () => {
   const card = render({ view_only: true }, panel())
   card._startChange()
   assert.equal(card._change, null)
+})
+
+test('without sensors the arming waits for none: a dropdown to choose them, and no minutes', () => {
+  const html = render({}, withSensors([])).innerHTML
+  assert.ok(html.includes('data-auto-sensors'))
+  assert.ok(html.includes('Sin esperar sensores'))
+  assert.ok(!html.includes('data-number'))
+})
+
+test('with sensors the dropdown names them and the quiet minutes come back', () => {
+  const html = render({}, withSensors(['binary_sensor.cocina', 'binary_sensor.living'])).innerHTML
+  assert.ok(html.includes('cuando ninguno de'))
+  assert.ok(html.includes('>Cocina, Living</button>'))
+  assert.ok(html.includes('data-number="number.quiet"'))
+  const many = render({}, withSensors(['binary_sensor.cocina', 'binary_sensor.living', 'binary_sensor.patio'])).innerHTML
+  assert.ok(many.includes('3 sensores de movimiento'))
+})
+
+test('the dropdown opens a list with every sensor and the chosen ones checked', () => {
+  const card = render({}, withSensors(['binary_sensor.living']))
+  assert.ok(!card.innerHTML.includes('data-popover'))
+  card._sensorsOpen = true
+  card._render(true)
+  const html = card.innerHTML
+  assert.ok(html.includes('data-popover'))
+  for (const entity of OPTIONS.map((item) => item.entity)) assert.ok(html.includes(`data-pop-sensor="${entity}"`), entity)
+  assert.ok(/data-pop-sensor="binary_sensor.living" checked/.test(html))
+  assert.ok(!/data-pop-sensor="binary_sensor.cocina" checked/.test(html))
+})
+
+test('a chosen sensor that is no longer offered stays in the list, with a readable name', () => {
+  const card = render({}, withSensors(['binary_sensor.gone_away']))
+  card._sensorsOpen = true
+  card._render(true)
+  assert.ok(/data-pop-sensor="binary_sensor.gone_away" checked/.test(card.innerHTML))
+  assert.ok(card.innerHTML.includes('> Gone Away</label>'))
+})
+
+test('the list shows names, never entity ids, and the name Home Assistant has now', () => {
+  const state = withSensors(['binary_sensor.rp_person'])
+  state.attributes.auto.arm.sensor_options = [
+    { entity: 'binary_sensor.rp_person', name: 'Rp Person', group: 'Camara 1' },
+    { entity: 'binary_sensor.rp_vehicle', name: 'Rp Vehicle', group: 'Camara 1' },
+    { entity: 'binary_sensor.patio', name: 'Patio' },
+  ]
+  const card = render({}, state)
+  card._hass.states['binary_sensor.rp_person'] = { state: 'off', attributes: { friendly_name: 'RP-PCB8M Person' } }
+  card._sensorsOpen = true
+  card._render(true)
+  const html = card.innerHTML
+  assert.ok(html.includes('Camara 1 · RP-PCB8M Person'))
+  assert.ok(html.includes('Camara 1 · Rp Vehicle'))
+  assert.ok(html.includes('> Patio</label>'))
+  assert.ok(!/>[^<]*binary_sensor\.[^<]*</.test(html.replace(/data-[a-z-]+="[^"]*"/g, '')), 'an entity id is shown')
+})
+
+test('the list is asked for, so it has what Home Assistant has now, and again when it opens', async () => {
+  const calls = []
+  const card = render({}, withSensors(['binary_sensor.cocina']))
+  card._hass.callWS = async (message) => {
+    calls.push(message.type)
+    return [{ entity: 'binary_sensor.cocina', name: 'Cocina' }, { entity: 'binary_sensor.rp_motion', name: 'RP-PCB8M Motion' }]
+  }
+  card._render(true)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(calls, ['annika/alarm_sensor_options'])
+  card._sensorsOpen = true
+  card._render(true)
+  assert.ok(card.innerHTML.includes('data-pop-sensor="binary_sensor.rp_motion"'))
+  assert.ok(!card.innerHTML.includes('data-pop-sensor="binary_sensor.patio"'))
+})
+
+test('if the list cannot be asked for, the card keeps drawing and does not insist', async () => {
+  let calls = 0
+  const card = render({}, withSensors(['binary_sensor.cocina']))
+  card._hass.callWS = async () => { calls += 1; throw new Error('unknown command') }
+  card._render(true)
+  await new Promise((resolve) => setImmediate(resolve))
+  card._render(true)
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(calls, 1)
+  assert.ok(card.innerHTML.includes('Cocina'))
+})
+
+test('view_only never draws the sensors list', () => {
+  const card = render({ view_only: true }, withSensors(['binary_sensor.living']))
+  card._sensorsOpen = true
+  card._render(true)
+  assert.ok(!card.innerHTML.includes('data-popover'))
+  assert.ok(!card.innerHTML.includes('data-auto-sensors'))
 })

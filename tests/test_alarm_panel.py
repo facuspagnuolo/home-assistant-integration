@@ -723,3 +723,164 @@ async def test_the_enabled_flag_is_stored_and_comes_back(hass):
     await again.async_load()
     assert again.enabled_modes == ["away", "night"]
     assert again.modes["vacation"]["enabled"] is False
+
+
+# --- the sensors the automatic arming waits for ---------------------------------
+
+
+async def set_auto_sensors(hass, sensors):
+    await hass.services.async_call(
+        DOMAIN, "set_auto_arm_sensors", {"entity_id": ENTITY, "sensors": sensors}, blocking=True
+    )
+
+
+async def test_the_card_gets_the_group_and_asks_for_what_it_can_be_made_of(hass, hass_ws_client):
+    # No frozen clock here: the websocket's token is made at the real time.
+    for sensor in SENSORS:
+        hass.states.async_set(sensor, "off")
+    await setup_panel(hass, AUTO)
+    arm = hass.states.get(ENTITY).attributes["auto"]["arm"]
+    assert arm["sensors"] == SENSORS
+    # Not kept in the panel's attributes: they would be built before the cameras exist.
+    assert "sensor_options" not in arm
+    # A sensor that shows up after the panel is there when the card asks.
+    hass.states.async_set("binary_sensor.patio_pir", "off", {"device_class": "motion", "friendly_name": "Patio PIR"})
+    hass.states.async_set("binary_sensor.front_door", "off", {"device_class": "door", "friendly_name": "Front door"})
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id({"type": "annika/alarm_sensor_options"})
+    message = await client.receive_json()
+    assert message["success"]
+    assert message["result"] == [{"entity": "binary_sensor.patio_pir", "name": "Patio PIR"}]
+
+
+async def test_every_sensor_of_a_camera_goes_by_the_cameras_name(hass, freezer):
+    from types import SimpleNamespace
+
+    from homeassistant.helpers import device_registry as dr, entity_registry as er
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    entry = MockConfigEntry(domain="test")
+    entry.add_to_hass(hass)
+    devices, registry = dr.async_get(hass), er.async_get(hass)
+    camera = devices.async_get_or_create(config_entry_id=entry.entry_id, identifiers={("test", "cam")})
+    other = devices.async_get_or_create(config_entry_id=entry.entry_id, identifiers={("test", "other")})
+    for kind in ("person", "vehicle", "animal", "motion"):
+        registry.async_get_or_create("binary_sensor", "test", f"cam_{kind}", suggested_object_id=f"cam_{kind}", device_id=camera.id, config_entry=entry)
+    registry.async_get_or_create("binary_sensor", "test", "other_motion", suggested_object_id="other_motion", device_id=other.id, config_entry=entry)
+    # The camera 10 comes after the camera 2, and the animal and the motion are not in any zone.
+    for entity, name in (("cam_animal", "RP Animal"), ("cam_motion", "RP Motion"), ("other_motion", "Hall PIR")):
+        hass.states.async_set(f"binary_sensor.{entity}", "off", {"device_class": "motion", "friendly_name": name})
+    # Not loaded yet when the attributes were built: a readable name, never the id.
+    zones = [SimpleNamespace(sensors=[
+        SimpleNamespace(name="Camara 1", detail="motion", entities=["binary_sensor.cam_person", "binary_sensor.cam_vehicle"]),
+        SimpleNamespace(name="Oficina", detail="motion", entities=["binary_sensor.office_motion"]),
+    ])]
+    panel = await setup_auto(hass, freezer)
+    panel.rules = SimpleNamespace(zones=zones, attributes=lambda: {}, async_stop=None)
+    from custom_components.annika.motion_sensors import sensor_choices
+
+    assert sensor_choices(hass) == [
+        {"entity": "binary_sensor.cam_person", "name": "Cam Person", "group": "Camara 1"},
+        {"entity": "binary_sensor.cam_vehicle", "name": "Cam Vehicle", "group": "Camara 1"},
+        {"entity": "binary_sensor.cam_animal", "name": "RP Animal", "group": "Camara 1"},
+        {"entity": "binary_sensor.cam_motion", "name": "RP Motion", "group": "Camara 1"},
+        {"entity": "binary_sensor.other_motion", "name": "Hall PIR"},
+        {"entity": "binary_sensor.office_motion", "name": "Oficina"},
+    ]
+
+
+def test_cameras_are_listed_in_natural_order():
+    from custom_components.annika.motion_sensors import _natural
+
+    assert sorted(["Camara 10", "Camara 2", "Camara 1"], key=_natural) == ["Camara 1", "Camara 2", "Camara 10"]
+
+
+async def test_the_group_is_chosen_from_the_card_and_replaces_the_yaml(hass, freezer, hass_storage):
+    panel = await setup_auto(hass, freezer)
+    await set_auto_sensors(hass, ["binary_sensor.kitchen", "binary_sensor.kitchen", "binary_sensor.patio"])
+    assert panel.auto_arm_sensors == ["binary_sensor.kitchen", "binary_sensor.patio"]
+    assert hass.states.get(ENTITY).attributes["auto"]["arm"]["sensors"] == ["binary_sensor.kitchen", "binary_sensor.patio"]
+    await advance(hass, freezer, 2)
+    assert hass_storage[f"{DOMAIN}.alarm_panel"]["data"]["auto_sensors"] == ["binary_sensor.kitchen", "binary_sensor.patio"]
+
+
+async def test_only_the_new_group_keeps_the_house_awake(hass, freezer):
+    await setup_auto(hass, freezer)
+    await set_auto_sensors(hass, ["binary_sensor.kitchen"])
+    await tick_to(hass, freezer, 23, 0)
+    # The hall is no longer in the group: its movement does not count.
+    hass.states.async_set("binary_sensor.hall", "on")
+    await hass.async_block_till_done()
+    await tick_to(hass, freezer, 23, 11)
+    assert state(hass) == "armed_night"
+
+
+async def test_a_sensor_added_to_the_group_counts_from_then_on(hass, freezer):
+    await setup_auto(hass, freezer)
+    await set_auto_sensors(hass, ["binary_sensor.kitchen", "binary_sensor.patio"])
+    await tick_to(hass, freezer, 23, 0)
+    await tick_to(hass, freezer, 23, 8)
+    hass.states.async_set("binary_sensor.patio", "on")
+    await hass.async_block_till_done()
+    await tick_to(hass, freezer, 23, 12)
+    assert state(hass) == "disarmed"
+    hass.states.async_set("binary_sensor.patio", "off")
+    await hass.async_block_till_done()
+    await tick_to(hass, freezer, 23, 23)
+    assert state(hass) == "armed_night"
+
+
+async def test_changing_the_group_while_waiting_starts_the_quiet_time_over(hass, freezer):
+    await setup_auto(hass, freezer)
+    await tick_to(hass, freezer, 23, 0)
+    await tick_to(hass, freezer, 23, 8)
+    await set_auto_sensors(hass, ["binary_sensor.kitchen"])
+    await tick_to(hass, freezer, 23, 12)
+    assert state(hass) == "disarmed"
+    await tick_to(hass, freezer, 23, 18, 1)
+    assert state(hass) == "armed_night"
+
+
+async def test_an_empty_group_arms_at_the_time_whatever_the_quiet_minutes(hass, freezer):
+    await setup_auto(hass, freezer)
+    await set_auto_sensors(hass, [])
+    await tick_to(hass, freezer, 23, 0)
+    assert state(hass) == "armed_night"
+
+
+async def test_emptying_the_group_while_waiting_arms_at_once(hass, freezer):
+    await setup_auto(hass, freezer, active=["binary_sensor.kitchen"])
+    await tick_to(hass, freezer, 23, 0)
+    assert state(hass) == "disarmed"
+    await set_auto_sensors(hass, [])
+    assert state(hass) == "armed_night"
+
+
+async def test_the_chosen_group_survives_a_restart_even_when_empty(hass, freezer, hass_storage):
+    hass_storage[f"{DOMAIN}.alarm_panel"] = {"version": 1, "key": f"{DOMAIN}.alarm_panel", "data": {
+        "salt": "", "hash": "", "initial": True, "auto_sensors": ["binary_sensor.patio", 3, "light.hall"],
+    }}
+    panel = await setup_auto(hass, freezer)
+    assert panel.auto_arm_sensors == ["binary_sensor.patio"]
+    hass_storage[f"{DOMAIN}.alarm_panel"]["data"]["auto_sensors"] = []
+    panel = await setup_auto(hass, freezer)
+    assert panel.auto_arm_sensors == []
+
+
+async def test_a_group_that_was_never_chosen_follows_the_yaml(hass, freezer, hass_storage):
+    panel = await setup_auto(hass, freezer)
+    assert panel.auto_arm_sensors == SENSORS
+    await advance(hass, freezer, 2)
+    assert "auto_sensors" not in hass_storage[f"{DOMAIN}.alarm_panel"]["data"]
+
+
+async def test_the_group_only_takes_binary_sensors(hass, freezer):
+    await setup_auto(hass, freezer)
+    with pytest.raises(ServiceValidationError):
+        await set_auto_sensors(hass, ["light.hall"])
+
+
+async def test_the_group_needs_automatic_arming(hass):
+    await setup_panel(hass)  # no auto_arm block
+    with pytest.raises(ServiceValidationError):
+        await set_auto_sensors(hass, ["binary_sensor.hall"])
