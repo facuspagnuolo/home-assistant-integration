@@ -8,6 +8,7 @@ than a hand-parsed secrets.yaml.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -75,6 +76,34 @@ class AnnikaEventClient:
                     )
         except aiohttp.ClientError as error:
             raise HomeAssistantError(f"Annika event failed: {error}") from error
+
+    async def async_rainbird_alert_delay(self) -> int:
+        """Read the notification delay without exposing administrative settings."""
+        unit_config = self._hass.data[DOMAIN]
+        timestamp = str(int(time.time()))
+        url = (
+            f"{unit_config[CONF_API_URL].rstrip('/')}"
+            f"/units/{unit_config[CONF_UNIT_ID]}/settings"
+        )
+        session = async_get_clientsession(self._hass)
+        try:
+            async with session.get(
+                url,
+                headers={
+                    "x-annika-timestamp": timestamp,
+                    "x-annika-signature": self._sign(unit_config[CONF_WEBHOOK_SECRET], timestamp, b""),
+                },
+                timeout=aiohttp.ClientTimeout(total=TIMEOUT_SECONDS),
+            ) as response:
+                if response.status != 200:
+                    raise HomeAssistantError(f"Annika unit settings failed with status {response.status}")
+                payload = await response.json()
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as error:
+            raise HomeAssistantError("Unable to read Annika unit settings") from error
+        delay = payload.get("rainbirdAlertDelayMinutes") if isinstance(payload, dict) else None
+        if type(delay) is not int or not 0 <= delay <= 1440:
+            raise HomeAssistantError("Invalid Rain Bird notification delay")
+        return delay
 
     def _sign(self, secret: str, timestamp: str, body: bytes) -> str:
         return hmac.new(

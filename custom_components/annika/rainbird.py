@@ -14,8 +14,10 @@ the integration at the new address, the same way someone would do it by hand:
    aborts with `already_configured`, updates the host of the existing entry and
    reloads it. Any other address returns the form with an error and the flow is
    closed.
-3. Annika's staff gets a `system` unit event: reconnected, or not found (once
-   per outage). While it stays down the search is retried with a backoff.
+3. Annika's staff gets a `system` unit event only when the outage reaches the
+   notification delay configured in the dashboard (10 minutes by default).
+   Recovery is reported only for an outage that was reported. While it stays
+   down the search is retried with a backoff.
 
 Off unless the unit opts in, since not every house has a Rain Bird:
 
@@ -31,7 +33,7 @@ import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from homeassistant.components import network
 from homeassistant.config_entries import SOURCE_USER, ConfigEntry, ConfigEntryState
@@ -47,6 +49,7 @@ from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later
+from homeassistant.util import dt as dt_util
 
 from .send_event import AnnikaEventClient
 
@@ -60,6 +63,8 @@ GRACE_PERIOD = timedelta(minutes=5)
 # When the controller is not found, try again after these delays; the last one
 # repeats for as long as it stays down.
 RETRY_DELAYS = (timedelta(minutes=15), timedelta(minutes=30), timedelta(hours=1))
+
+DEFAULT_ALERT_DELAY_MINUTES = 10
 
 PARALLEL_ATTEMPTS = 16
 PORT_TIMEOUT_SECONDS = 2
@@ -81,6 +86,8 @@ class _Outage:
     cancel_timer: Callable[[], None] | None = None
     attempts: int = 0
     notified_not_found: bool = False
+    started_at: datetime = field(default_factory=dt_util.utcnow)
+    alert_delay: timedelta | None = None
 
 
 @dataclass
@@ -176,6 +183,15 @@ class RainbirdReconnector:
                 if outage.cancel_timer:
                     outage.cancel_timer()
                 del self._outages[entry.entry_id]
+                if outage.notified_not_found:
+                    self._hass.async_create_background_task(
+                        self._async_notify(
+                            "Rain Bird reconectado",
+                            "El Rain Bird volvió a estar disponible.",
+                            {"ip": entry.data.get(CONF_HOST)},
+                        ),
+                        f"annika rainbird recovery {entry.entry_id}",
+                    )
             return
         if outage is None:
             _LOGGER.info(
@@ -209,6 +225,13 @@ class RainbirdReconnector:
                 self._outages.pop(entry_id, None)
                 return
 
+            if outage.alert_delay is None:
+                try:
+                    minutes = await self._client.async_rainbird_alert_delay()
+                except Exception:  # The API may be down; reconnection must still work.
+                    _LOGGER.warning("Unable to read Rain Bird alert delay; using 10 minutes", exc_info=True)
+                    minutes = DEFAULT_ALERT_DELAY_MINUTES
+                outage.alert_delay = timedelta(minutes=minutes)
             old_host = entry.data.get(CONF_HOST)
             _LOGGER.info("Rain Bird %s still down; searching the network", entry.title)
             try:
@@ -217,10 +240,19 @@ class RainbirdReconnector:
                 _LOGGER.exception("Rain Bird search failed")
                 result = _SearchResult()
 
+            # Entity state changes can resolve this outage while the search awaits network I/O.
+            if self._outages.get(entry_id) is not outage:
+                return
             if result.host is not None:
                 self._outages.pop(entry_id, None)
                 if result.host == old_host:
                     _LOGGER.info("Rain Bird %s answered on its usual address", entry.title)
+                    if outage.notified_not_found:
+                        await self._async_notify(
+                            "Rain Bird reconectado",
+                            "El Rain Bird volvió a estar disponible.",
+                            {"ip": result.host},
+                        )
                     return
                 _LOGGER.info(
                     "Rain Bird %s moved from %s to %s; integration updated",
@@ -228,6 +260,8 @@ class RainbirdReconnector:
                     old_host,
                     result.host,
                 )
+                if not outage.notified_not_found:
+                    return
                 await self._async_notify(
                     "Rain Bird reconectado",
                     f"El Rain Bird cambió de IP ({old_host} → {result.host}) "
@@ -242,9 +276,9 @@ class RainbirdReconnector:
                 result.tried,
                 ", ".join(result.networks) or "no network",
             )
-            if not outage.notified_not_found:
-                outage.notified_not_found = True
-                await self._async_notify(
+            elapsed = dt_util.utcnow() - outage.started_at
+            if not outage.notified_not_found and elapsed >= outage.alert_delay:
+                outage.notified_not_found = await self._async_notify(
                     "Rain Bird no disponible",
                     "El Rain Bird está desconectado y no apareció en ninguna IP de "
                     "la red. Puede estar apagado o en otra red.",
@@ -252,6 +286,8 @@ class RainbirdReconnector:
                 )
             delay = RETRY_DELAYS[min(outage.attempts, len(RETRY_DELAYS) - 1)]
             outage.attempts += 1
+            if not outage.notified_not_found and elapsed < outage.alert_delay:
+                delay = min(delay, outage.alert_delay - elapsed)
             self._schedule(entry_id, outage, delay)
 
     async def _async_find(self, entry: ConfigEntry) -> _SearchResult:
@@ -370,7 +406,7 @@ class RainbirdReconnector:
             networks.append(ipaddress.ip_network(f"{last_known}/{FALLBACK_PREFIX}", strict=False))
         return networks
 
-    async def _async_notify(self, title: str, message: str, data: dict) -> None:
+    async def _async_notify(self, title: str, message: str, data: dict) -> bool:
         try:
             await self._client.async_send(
                 {
@@ -381,8 +417,10 @@ class RainbirdReconnector:
                     "data": data,
                 }
             )
+            return True
         except Exception:
             _LOGGER.exception("Unable to send the Rain Bird event to Annika")
+            return False
 
 
 async def _port_open(ip: str, port: int) -> bool:

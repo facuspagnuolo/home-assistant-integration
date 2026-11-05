@@ -54,6 +54,12 @@ def lan():
         yield
 
 
+@pytest.fixture(autouse=True)
+def alert_delay():
+    with patch.object(rb.AnnikaEventClient, "async_rainbird_alert_delay", AsyncMock(return_value=0)) as delay:
+        yield delay
+
+
 @pytest.fixture
 def annika_events():
     with patch.object(rb.AnnikaEventClient, "async_send", AsyncMock()) as send:
@@ -86,11 +92,7 @@ async def test_reconnects_when_the_controller_moved(hass, controller_at, annika_
     assert entry.data["host"] == NEW_HOST
     assert len(hass.config_entries.async_entries("rainbird")) == 1
     assert hass.config_entries.flow.async_progress() == []
-    annika_events.assert_awaited_once()
-    event = annika_events.await_args.args[0]
-    assert event["type"] == "system"
-    assert event["title"] == "Rain Bird reconectado"
-    assert event["data"] == {"ip": NEW_HOST, "old_ip": OLD_HOST}
+    annika_events.assert_not_awaited()
     assert entry.entry_id not in reconnector._outages
 
 
@@ -161,7 +163,7 @@ async def test_searches_only_after_staying_unavailable(hass, controller_at, anni
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=12))
     await hass.async_block_till_done(wait_background_tasks=True)
     assert entry.data["host"] == NEW_HOST
-    annika_events.assert_awaited_once()
+    annika_events.assert_not_awaited()
     await reconnector.async_stop()
 
 
@@ -236,7 +238,7 @@ async def test_searches_around_the_last_known_address_when_the_lan_is_not_report
 
     assert [str(net) for net in networks] == ["192.0.2.0/24"]
     assert entry.data["host"] == NEW_HOST
-    assert annika_events.await_args.args[0]["title"] == "Rain Bird reconectado"
+    annika_events.assert_not_awaited()
 
 
 async def test_internal_container_networks_are_never_searched(hass):
@@ -260,3 +262,102 @@ async def test_internal_container_networks_are_never_searched(hass):
         networks = await reconnector._async_networks(OLD_HOST)
 
     assert [str(net) for net in networks] == ["192.0.2.0/28"]
+
+
+async def test_short_outage_suppresses_both_notifications(hass, controller_at, annika_events, alert_delay, freezer):
+    alert_delay.return_value = 10
+    controller_at["host"] = None
+    entry = rainbird_entry(hass)
+    reconnector = rb.RainbirdReconnector(hass)
+    await search(hass, reconnector, entry)
+    annika_events.assert_not_awaited()
+    freezer.tick(timedelta(minutes=6))
+    controller_at["host"] = NEW_HOST
+    await reconnector._async_search(entry.entry_id)
+    assert entry.data["host"] == NEW_HOST
+    annika_events.assert_not_awaited()
+    await reconnector.async_stop()
+
+
+async def test_long_outage_notifies_once_then_reports_recovery(hass, controller_at, annika_events, alert_delay, freezer):
+    alert_delay.return_value = 12
+    controller_at["host"] = None
+    entry = rainbird_entry(hass)
+    reconnector = rb.RainbirdReconnector(hass)
+    await search(hass, reconnector, entry)
+    freezer.tick(timedelta(minutes=11))
+    await reconnector._async_search(entry.entry_id)
+    annika_events.assert_not_awaited()
+    freezer.tick(timedelta(minutes=1))
+    await reconnector._async_search(entry.entry_id)
+    annika_events.assert_awaited_once()
+    assert annika_events.await_args.args[0]["title"] == "Rain Bird no disponible"
+    await reconnector._async_search(entry.entry_id)
+    annika_events.assert_awaited_once()
+    controller_at["host"] = OLD_HOST
+    await reconnector._async_search(entry.entry_id)
+    assert annika_events.await_count == 2
+    assert annika_events.await_args.args[0]["title"] == "Rain Bird reconectado"
+    await reconnector.async_stop()
+
+
+async def test_natural_recovery_only_notifies_if_the_outage_was_reported(hass, annika_events):
+    entry = rainbird_entry(hass)
+    entry.mock_state(hass, ConfigEntryState.LOADED)
+    reconnector = rb.RainbirdReconnector(hass)
+    reconnector._outages[entry.entry_id] = rb._Outage(notified_not_found=False)
+    reconnector._evaluate(entry)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    annika_events.assert_not_awaited()
+    reconnector._outages[entry.entry_id] = rb._Outage(notified_not_found=True)
+    reconnector._evaluate(entry)
+    reconnector._evaluate(entry)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    annika_events.assert_awaited_once()
+    assert annika_events.await_args.args[0]["title"] == "Rain Bird reconectado"
+
+
+async def test_settings_failure_keeps_reconnection_working_with_safe_default(hass, controller_at, annika_events, alert_delay):
+    alert_delay.side_effect = RuntimeError("API unavailable")
+    controller_at["host"] = None
+    entry = rainbird_entry(hass)
+    reconnector = rb.RainbirdReconnector(hass)
+    await search(hass, reconnector, entry)
+    assert reconnector._outages[entry.entry_id].alert_delay == timedelta(minutes=10)
+    annika_events.assert_not_awaited()
+    controller_at["host"] = NEW_HOST
+    await reconnector._async_search(entry.entry_id)
+    assert entry.data["host"] == NEW_HOST
+    annika_events.assert_not_awaited()
+    await reconnector.async_stop()
+
+
+async def test_rechecks_at_the_alert_deadline_before_the_normal_retry(hass, controller_at, annika_events, alert_delay, freezer):
+    alert_delay.return_value = 10
+    controller_at["host"] = None
+    entry = rainbird_entry(hass)
+    reconnector = rb.RainbirdReconnector(hass)
+    await reconnector.async_start()
+    freezer.tick(timedelta(minutes=5))
+    async_fire_time_changed(hass, dt_util.utcnow())
+    await hass.async_block_till_done(wait_background_tasks=True)
+    annika_events.assert_not_awaited()
+    freezer.tick(timedelta(minutes=5))
+    async_fire_time_changed(hass, dt_util.utcnow())
+    await hass.async_block_till_done(wait_background_tasks=True)
+    annika_events.assert_awaited_once()
+    await reconnector.async_stop()
+
+
+async def test_failed_alert_delivery_is_retried(hass, controller_at, annika_events):
+    controller_at["host"] = None
+    annika_events.side_effect = RuntimeError("API unavailable")
+    entry = rainbird_entry(hass)
+    reconnector = rb.RainbirdReconnector(hass)
+    await search(hass, reconnector, entry)
+    assert not reconnector._outages[entry.entry_id].notified_not_found
+    annika_events.side_effect = None
+    await reconnector._async_search(entry.entry_id)
+    assert reconnector._outages[entry.entry_id].notified_not_found
+    assert annika_events.await_count == 2
+    await reconnector.async_stop()
