@@ -157,7 +157,7 @@
       ac: 'AC',
       status: 'Estado',
       on: 'Encendido',
-      off: 'Apagado',
+      off: 'Off',
       season_on: 'Encendido · temporada de AC ({temp})',
       season_off: 'Encendido · fuera de temporada ({temp})',
       season_any: 'Encendido',

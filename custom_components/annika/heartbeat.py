@@ -9,8 +9,11 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_interval
 
+from .const import DOMAIN
 from .send_event import AnnikaEventClient
 
 BATTERY_WARNING_LEVEL = 30
@@ -26,6 +29,12 @@ MONITORED_UNAVAILABLE_DOMAINS = {
     "camera",
     "binary_sensor",
 }
+
+# Rain Bird already has its own reconnection and alert (see rainbird.py); reporting
+# its entities as an unavailable device would tell the owner about the same outage twice.
+# Annika's own entities (the irrigation zones, for one) only mirror another device, so they
+# go unavailable with it and would report that outage a second time under another name.
+EXCLUDED_DEVICE_PLATFORMS = {"rainbird", DOMAIN}
 
 SYSTEM_CPU_ENTITY_ID = "sensor.system_monitor_processor_use"
 SYSTEM_MEMORY_ENTITY_ID = "sensor.system_monitor_memory_usage"
@@ -82,6 +91,7 @@ class HeartbeatReporter:
             "timestamp": self._timestamp(datetime.now(timezone.utc)),
             "system": self._system_usage(),
             "unavailable": self._unavailable_entities(),
+            "unavailableDevices": self._unavailable_devices(),
             "updates": self._pending_updates(),
             "batteries": self._low_batteries(),
         }
@@ -106,6 +116,61 @@ class HeartbeatReporter:
             if state.state == "unavailable"
                and now - state.last_changed >= UNAVAILABLE_WARNING_AFTER
                and state.entity_id.split(".", 1)[0] in MONITORED_UNAVAILABLE_DOMAINS
+        ]
+
+    def _unavailable_devices(self) -> list[dict]:
+        """Devices whose monitored entities are all unavailable.
+
+        A camera that loses power takes all its entities down with it, so the
+        entity list alone says "30 unavailable" for two cameras. A device counts
+        as down only when every one of its monitored entities has been
+        unavailable for the warning period; a single sensor failing on its own
+        is not a device failure. Entities that belong to no device stand for
+        themselves. Integrations with their own recovery flow are left out.
+        """
+
+        now = datetime.now(timezone.utc)
+        entity_registry = er.async_get(self._hass)
+        device_registry = dr.async_get(self._hass)
+        groups: dict[str, dict] = {}
+
+        for state in self._hass.states.async_all():
+            if state.entity_id.split(".", 1)[0] not in MONITORED_UNAVAILABLE_DOMAINS:
+                continue
+
+            entry = entity_registry.async_get(state.entity_id)
+            if entry is not None and entry.platform in EXCLUDED_DEVICE_PLATFORMS:
+                continue
+
+            device = (
+                device_registry.async_get(entry.device_id)
+                if entry is not None and entry.device_id
+                else None
+            )
+            device_id = device.id if device is not None else state.entity_id
+            group = groups.setdefault(
+                device_id,
+                {
+                    "name": (device.name_by_user or device.name) if device else None,
+                    "fallback_name": state.name,
+                    "total": 0,
+                    "unavailable_since": [],
+                },
+            )
+            group["total"] += 1
+            if state.state == "unavailable" and now - state.last_changed >= UNAVAILABLE_WARNING_AFTER:
+                group["unavailable_since"].append(state.last_changed)
+
+        return [
+            {
+                "deviceId": device_id,
+                "name": group["name"] or group["fallback_name"],
+                "since": self._timestamp(min(group["unavailable_since"])),
+                "unavailableEntities": len(group["unavailable_since"]),
+                "totalEntities": group["total"],
+            }
+            for device_id, group in groups.items()
+            if group["unavailable_since"] and len(group["unavailable_since"]) == group["total"]
         ]
 
     def _pending_updates(self) -> list[dict]:

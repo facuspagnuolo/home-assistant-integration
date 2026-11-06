@@ -143,7 +143,7 @@
       heating: 'Calefacción',
       boiler: 'Caldera',
       on: 'Encendida',
-      off: 'Apagada',
+      off: 'Off',
       standby: 'Fuera de temporada',
       season_on: 'Encendida · temporada de calefacción ({temp})',
       season_off: 'Encendida · fuera de temporada ({temp})',
