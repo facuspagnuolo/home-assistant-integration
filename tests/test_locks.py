@@ -18,6 +18,8 @@ from pytest_homeassistant_custom_component.common import async_fire_time_changed
 from custom_components.annika.alarm_panel import DATA_ALARM_PANEL
 from custom_components.annika.const import DISCOVERY_KIND, DOMAIN, KIND_LOCKS
 from custom_components.annika.locks import (
+    CLOSE_RETRIES_MAX,
+    CLOSE_VERIFY_SECONDS,
     CODE_MAX_LENGTH,
     DATA_LOCKS,
     LOCKS_SCHEMA,
@@ -723,7 +725,7 @@ async def test_attributes(hass, zwave, sent):
     front = attrs["config"]["locks"][0]
     assert front["entity"] == FRONT and front["sensor"] == DOOR
     assert front["settings"] == {
-        "hold": True, "close": False, "seconds": 30, "open": False, "open_seconds": 60,
+        "hold": True, "close": False, "seconds": 30, "retries": 2, "open": False, "open_seconds": 60,
     }
     assert attrs["codes"][0]["code"] == "482915"
 
@@ -752,6 +754,7 @@ async def test_the_sensor_the_settings_and_the_services(hass, zwave, sent):
         "hold": "switch.front_door_hold_to_unlock",
         "close": "switch.front_door_lock_when_closed",
         "seconds": "number.front_door_lock_when_closed_after",
+        "retries": "number.front_door_lock_when_closed_retries",
         "open": "switch.front_door_notify_when_left_open",
         "open_seconds": "number.front_door_notify_when_left_open_after",
     }
@@ -767,12 +770,15 @@ async def test_the_sensor_the_settings_and_the_services(hass, zwave, sent):
     await hass.services.async_call(
         "number", "set_value", {"entity_id": entities["seconds"], "value": 45}, blocking=True
     )
+    await hass.services.async_call(
+        "number", "set_value", {"entity_id": entities["retries"], "value": 3}, blocking=True
+    )
     await hass.services.async_call("switch", "turn_on", {"entity_id": entities["open"]}, blocking=True)
     await hass.services.async_call(
         "number", "set_value", {"entity_id": entities["open_seconds"], "value": 90}, blocking=True
     )
     settings = hass.states.get(entity).attributes["config"]["locks"][0]["settings"]
-    assert settings == {"hold": False, "close": True, "seconds": 45, "open": True, "open_seconds": 90}
+    assert settings == {"hold": False, "close": True, "seconds": 45, "retries": 3, "open": True, "open_seconds": 90}
 
     await call("add_lock_code", name="Facu", code="482915", locks=[FRONT])
     await call("add_lock_code", name="Plumber", type="temporary", hours=2, locks=[KITCHEN])
@@ -897,3 +903,128 @@ async def test_in_between_states_do_not_restart_the_countdown(hass, zwave, sent,
     await hass.async_block_till_done()
     await clock(6)
     assert [call.data["entity_id"] for call in zwave.lock] == [FRONT]
+
+
+# --- an opening Z-Wave reports is an opening, whatever Home Assistant still thinks ----------
+
+
+async def test_a_keypad_code_disarms_even_when_the_lock_was_already_unlocked(hass, zwave, sent, clock):
+    # The lock jammed trying to lock itself: Home Assistant kept it as unlocked all night.
+    locks = await start(hass)
+    hass.states.async_set(FRONT, "unlocked")
+    await hass.async_block_till_done()
+    stub = hass.data[DATA_ALARM_PANEL] = panel(state="armed_night", mode="night")
+    locks.set_rule(enabled=True)
+    zwave_event(hass, FRONT, 6, 9)  # a code that is not in the list
+    await clock(ZWAVE_WAIT + 1)  # the state never changes
+    stub.disarm.assert_called_once_with(skip_code=True, source="locks")
+    event = locks.events[0]
+    assert event["kind"] == "unknown" and event["disarmed"] is True
+
+
+async def test_the_opening_and_the_state_change_disarm_once(hass, zwave, sent, clock):
+    locks = await start(hass)
+    stub = hass.data[DATA_ALARM_PANEL] = panel()
+    locks.set_rule(enabled=True)
+    await locks.async_add_code("Delfi", code="730284", lock_ids=[FRONT])
+    hass.states.async_set(FRONT, "unlocked")
+    zwave_event(hass, FRONT, 6, 1)
+    await clock(ZWAVE_WAIT + 1)
+    stub.disarm.assert_called_once()
+    assert locks.events[0]["disarmed"] is True
+
+
+async def test_a_lock_that_stayed_unlocked_locks_after_the_next_opening(hass, zwave, sent, clock):
+    locks = await start(hass)
+    locks.set_lock_settings(locks.locks[0], close_enabled=True, close_seconds=20)
+    hass.states.async_set(FRONT, "unlocked")
+    await hass.async_block_till_done()
+    zwave_event(hass, FRONT, 6, 9)
+    await clock(19)
+    assert zwave.lock == []
+    await clock(2)
+    assert [call.data["entity_id"] for call in zwave.lock] == [FRONT]
+
+
+# --- a lock that does not end up locked ----------------------------------------------------
+
+
+async def unlocked_and_shut(hass, locks, retries):
+    locks.set_lock_settings(locks.locks[0], close_enabled=True, close_seconds=20, close_retries=retries)
+    hass.states.async_set(FRONT, "unlocked")
+    await close_the_door(hass)
+
+
+async def test_a_jammed_lock_is_tried_again_as_many_times_as_the_setting_says(hass, zwave, sent, clock):
+    locks = await start(hass)
+    await unlocked_and_shut(hass, locks, retries=2)
+    await clock(21)
+    assert len(zwave.lock) == 1
+    # It never ends up locked: after the lock had its time, again.
+    await clock(CLOSE_VERIFY_SECONDS + 1)
+    assert len(zwave.lock) == 2
+    await clock(CLOSE_VERIFY_SECONDS + 1)
+    assert len(zwave.lock) == 3
+    # Then it says so, once, and stops.
+    await clock(CLOSE_VERIFY_SECONDS + 1)
+    assert len(zwave.lock) == 3
+    event = locks.events[0]
+    assert (event["kind"], event["lock"], event["notified"]) == ("jammed", "front_door", True)
+    assert sent.await_args.args[0]["title"] == "🔒 Door not locked"
+    await clock(300)
+    assert len(zwave.lock) == 3
+    assert [event["kind"] for event in locks.events].count("jammed") == 1
+
+
+async def test_no_retries_is_one_try_and_then_it_says_so(hass, zwave, sent, clock):
+    locks = await start(hass)
+    await unlocked_and_shut(hass, locks, retries=0)
+    await clock(21)
+    await clock(CLOSE_VERIFY_SECONDS + 1)
+    assert len(zwave.lock) == 1
+    assert locks.events[0]["kind"] == "jammed"
+
+
+async def test_a_lock_that_locks_on_a_retry_stops_there(hass, zwave, sent, clock):
+    locks = await start(hass)
+    await unlocked_and_shut(hass, locks, retries=3)
+    await clock(21)
+    await clock(CLOSE_VERIFY_SECONDS + 1)
+    assert len(zwave.lock) == 2
+    hass.states.async_set(FRONT, "locked")
+    await clock(CLOSE_VERIFY_SECONDS + 1)
+    assert len(zwave.lock) == 2
+    assert all(event["kind"] != "jammed" for event in locks.events)
+    # The next unlocking starts from the beginning.
+    hass.states.async_set(FRONT, "unlocked")
+    await close_the_door(hass)
+    await clock(21)
+    assert len(zwave.lock) == 3
+
+
+async def test_a_jammed_state_does_not_cancel_the_retries(hass, zwave, sent, clock):
+    locks = await start(hass)
+    await unlocked_and_shut(hass, locks, retries=2)
+    await clock(21)
+    hass.states.async_set(FRONT, "jammed")
+    await clock(CLOSE_VERIFY_SECONDS + 1)
+    assert len(zwave.lock) == 2
+
+
+async def test_the_door_opening_cancels_the_retries(hass, zwave, sent, clock):
+    locks = await start(hass)
+    await unlocked_and_shut(hass, locks, retries=2)
+    await clock(21)
+    hass.states.async_set(DOOR, "on")
+    await clock(CLOSE_VERIFY_SECONDS + 1)
+    assert len(zwave.lock) == 1
+    assert all(event["kind"] != "jammed" for event in locks.events)
+
+
+def test_the_retries_stay_between_none_and_the_most(hass):
+    locks = AnnikaLocks(hass, config())
+    lock = locks.locks[0]
+    locks.set_lock_settings(lock, close_retries=99)
+    assert lock.close_retries == CLOSE_RETRIES_MAX
+    locks.set_lock_settings(lock, close_retries=-4)
+    assert lock.close_retries == 0

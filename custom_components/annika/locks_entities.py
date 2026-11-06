@@ -24,6 +24,7 @@ from .const import DOMAIN
 from .locks import (
     CLOSE_MAX_SECONDS,
     CLOSE_MIN_SECONDS,
+    CLOSE_RETRIES_MAX,
     OPEN_MAX_SECONDS,
     OPEN_MIN_SECONDS,
     DATA_LOCKS,
@@ -58,7 +59,7 @@ async def async_setup_platform(
         return
     if platform_name == "number":
         async_add_entities(
-            entity for lock in locks.locks for entity in (CloseSecondsNumber(locks, lock), OpenSecondsNumber(locks, lock))
+            entity for lock in locks.locks for entity in (CloseSecondsNumber(locks, lock), CloseRetriesNumber(locks, lock), OpenSecondsNumber(locks, lock))
         )
         return
 
@@ -267,6 +268,36 @@ class CloseSecondsNumber(_Setting, RestoreNumber):
 
     async def async_set_native_value(self, value: float) -> None:
         self._locks.set_lock_settings(self._lock, close_seconds=int(value))
+
+
+class CloseRetriesNumber(_Setting, RestoreNumber):
+    """How many more times the lock is told to lock when it does not end up locked (a jam)."""
+
+    _attr_icon = "mdi:lock-reset"
+    _attr_mode = NumberMode.BOX
+    _attr_native_min_value = 0
+    _attr_native_max_value = CLOSE_RETRIES_MAX
+    _attr_native_step = 1
+
+    def __init__(self, locks: AnnikaLocks, lock: _Lock) -> None:
+        super().__init__(locks, lock, "close_retries", "Lock when closed retries")
+
+    @property
+    def available(self) -> bool:
+        return self._lock.sensor is not None
+
+    @property
+    def native_value(self) -> float:
+        return self._lock.close_retries
+
+    async def async_added_to_hass(self) -> None:
+        last = await self.async_get_last_number_data()
+        if last is not None and last.native_value is not None:
+            self._locks.set_lock_settings(self._lock, close_retries=int(last.native_value))
+        await self._listen()
+
+    async def async_set_native_value(self, value: float) -> None:
+        self._locks.set_lock_settings(self._lock, close_retries=int(value))
 
 
 class OpenSwitch(_Setting, SwitchEntity, RestoreEntity):

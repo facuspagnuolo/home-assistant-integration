@@ -30,16 +30,17 @@ const config = {
   locks: [
     {
       id: 'front_door', name: 'Front Door', entity: 'lock.front', sensor: 'binary_sensor.front', battery: 'sensor.front_battery',
-      settings: { hold: true, close: true, seconds: 30, open: false, open_seconds: 60 },
+      settings: { hold: true, close: true, seconds: 30, retries: 2, open: false, open_seconds: 60 },
       entities: {
         hold: 'switch.front_door_hold_to_unlock', close: 'switch.front_door_lock_when_closed', seconds: 'number.front_door_lock_when_closed_after',
+        retries: 'number.front_door_lock_when_closed_retries',
         open: 'switch.front_door_notify_when_left_open', open_seconds: 'number.front_door_notify_when_left_open_after',
       },
     },
     {
       id: 'kitchen', name: 'Kitchen', entity: 'lock.kitchen', sensor: null, battery: null,
-      settings: { hold: false, close: false, seconds: 30, open: false, open_seconds: 60 },
-      entities: { hold: null, close: null, seconds: null, open: null, open_seconds: null },
+      settings: { hold: false, close: false, seconds: 30, retries: 2, open: false, open_seconds: 60 },
+      entities: { hold: null, close: null, seconds: null, retries: null, open: null, open_seconds: null },
     },
   ],
 }
@@ -334,8 +335,8 @@ test('the settings are one table: a column per lock, a row per setting', () => {
   const html = el._settingsTableHtml(config, el._texts)
   assert.ok(html.includes('data-heading="Settings"'))
   assert.deepEqual([...html.matchAll(/<th>([^<]+)<\/th>/g)].map((m) => m[1]), ['Front Door', 'Kitchen'])
-  assert.equal((html.match(/<tr>/g) || []).length, 3, 'the header and the two settings')
-  assert.ok(html.includes('Lock after closing') && html.includes('Notify when left open'))
+  assert.equal((html.match(/<tr>/g) || []).length, 4, 'the header and the three settings')
+  assert.ok(html.includes('Lock after closing') && html.includes('Retry if it jams') && html.includes('Notify when left open'))
   assert.ok(html.includes('data-lswitch="switch.front_door_lock_when_closed" checked'))
   assert.ok(html.includes('data-lnumber="number.front_door_lock_when_closed_after"') && html.includes('value="30"'))
   assert.ok(html.includes('data-lswitch="switch.front_door_notify_when_left_open"') && !html.includes('data-lswitch="switch.front_door_notify_when_left_open" checked'))
@@ -345,7 +346,7 @@ test('the settings are one table: a column per lock, a row per setting', () => {
 test('a lock without a door sensor has its cells turned off', () => {
   const el = card()
   const html = el._settingsTableHtml(config, el._texts)
-  assert.equal((html.match(/cell off/g) || []).length, 2)
+  assert.equal((html.match(/cell off/g) || []).length, 3)
   assert.ok(html.includes('Needs a door sensor'))
 })
 
@@ -392,4 +393,30 @@ test('importing and renaming call their services', async () => {
   same(el.calls, [['rename_lock_code', { id: 'a1', name: 'Mamá' }], ['import_lock_codes', {}]])
   assert.equal(el.said, 'No new codes found in the locks.')
   delete globalThis.answer
+})
+
+test('how many times it retries is a number of its own, with no switch', () => {
+  const el = card()
+  const html = el._settingsTableHtml(config, el._texts)
+  assert.ok(html.includes('data-lnumber="number.front_door_lock_when_closed_retries"') && html.includes('value="2"'))
+  assert.ok(html.includes('times'))
+  assert.equal((html.match(/data-lswitch=/g) || []).length, 4, 'the two switches of each lock, none for the retries')
+})
+
+test('lock after closing says it in one short line', () => {
+  const en = card()
+  assert.equal(en._texts.close_sub, 'Locks itself some seconds after its door closes.')
+  const es = card()
+  es._hass.language = 'es'
+  assert.equal(es._texts.close_sub, 'Se cierra sola unos segundos después de cerrarse la puerta.')
+  assert.equal(es._texts.retries_title, 'Reintentar si se atasca')
+})
+
+test('a lock that could not lock says so in the activity', () => {
+  const el = card()
+  const view = el._eventView(config, { time: iso(1), lock: 'front_door', kind: 'jammed', how: 'close', who: null, notified: true }, el._texts)
+  assert.equal(view.who, 'Front Door')
+  assert.equal(view.text, 'could not lock: the bolt is stuck')
+  assert.ok(view.bad)
+  assert.ok(view.avatar.includes('mdi:lock-alert'))
 })

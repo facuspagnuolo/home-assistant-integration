@@ -32,7 +32,7 @@
       },
       "heating_status": {
         "state": {
-          "off": "Apagada",
+          "off": "Off",
           "standby": "En espera",
           "idle": "En reposo",
           "heating": "Calentando"
@@ -40,7 +40,7 @@
       },
       "ac_status": {
         "state": {
-          "off": "Apagado",
+          "off": "Off",
           "standby": "En espera",
           "idle": "En reposo",
           "running": "Funcionando"

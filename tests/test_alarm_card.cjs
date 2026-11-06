@@ -189,3 +189,25 @@ test('view_only never draws the sensors list', () => {
   assert.ok(!card.innerHTML.includes('data-popover'))
   assert.ok(!card.innerHTML.includes('data-auto-sensors'))
 })
+
+test('in Spanish the mode buttons say only the name of the mode', () => {
+  const html = render({}, panel()).innerHTML
+  assert.ok(html.includes('data-mode="arm_away">Salida</button>'))
+  assert.ok(html.includes('data-mode="arm_night">Noche</button>'))
+  const modes = html.slice(html.indexOf('class="modes"'), html.indexOf('</div>', html.indexOf('class="modes"')))
+  assert.ok(!modes.includes('Armar'), 'no "Armar" in the mode buttons')
+})
+
+test('the prompt is above the modes, not below', () => {
+  const html = render({}, panel()).innerHTML
+  const prompt = html.indexOf('class="prompt"')
+  assert.ok(prompt > 0 && prompt < html.indexOf('class="modes"'), 'the prompt comes first')
+  assert.ok(html.includes('Elegí un modo'))
+})
+
+test('view_only does not offer to change the code, nor while armed', () => {
+  for (const state of ['disarmed', 'armed_night']) {
+    const html = render({ view_only: true }, panel(state)).innerHTML
+    assert.ok(!html.includes('Cambiar código') && !html.includes('data-change'), state)
+  }
+})

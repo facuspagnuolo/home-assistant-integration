@@ -80,7 +80,10 @@
       no_alarm: 'The alarm is not set up, so there is nothing to disarm.',
       test: 'Test',
       close_title: 'Lock after closing',
-      close_sub: 'Locks itself some seconds after its door closes, or after it is unlocked with the door shut. Opening the door cancels it.',
+      close_sub: 'Locks itself some seconds after its door closes.',
+      retries_title: 'Retry if it jams',
+      retries_sub: 'How many more times it tries to lock when the bolt does not go in.',
+      times: 'times',
       open_title: 'Notify when left open',
       open_sub: 'Sends a notification if the door stays open longer than that.',
       sec: 'sec',
@@ -88,6 +91,7 @@
       no_notification: 'Notifications need a notify_view in the configuration.',
       told: 'Notification sent',
       ev_left_open: 'was left open',
+      ev_jammed: 'could not lock: the bolt is stuck',
       locked: 'Locked',
       unlocked: 'Unlocked',
       unlocking: 'Unlocking…',
@@ -192,7 +196,10 @@
       no_alarm: 'La alarma no está configurada, así que no hay nada que desactivar.',
       test: 'Probar',
       close_title: 'Trabar al cerrarse',
-      close_sub: 'Se cierra sola unos segundos después de cerrarse la puerta, o de destrabarse con la puerta cerrada. Si la puerta se abre, se cancela.',
+      close_sub: 'Se cierra sola unos segundos después de cerrarse la puerta.',
+      retries_title: 'Reintentar si se atasca',
+      retries_sub: 'Cuántas veces más intenta trabarla cuando el pestillo no entra.',
+      times: 'veces',
       open_title: 'Avisar si está abierta',
       open_sub: 'Envía una notificación si la puerta sigue abierta más tiempo que ese.',
       sec: 'seg',
@@ -200,6 +207,7 @@
       no_notification: 'Las notificaciones necesitan notify_view en la configuración.',
       told: 'Notificación enviada',
       ev_left_open: 'se dejó abierta',
+      ev_jammed: 'no pudo trabarse: el pestillo está atascado',
       locked: 'Cerrada',
       unlocked: 'Abierta',
       unlocking: 'Abriendo…',
@@ -931,9 +939,18 @@
     _settingsTableHtml(config, t) {
       const rows = [
         { kind: 'close', seconds: 'seconds', secondsEntity: 'seconds', min: 5, max: 600, step: 5 },
+        // How many more times it locks again when the bolt jams: a number with no switch of its own.
+        { kind: 'retries', seconds: 'retries', secondsEntity: 'retries', min: 0, max: 5, step: 1, unit: 'times', numberOnly: true },
         { kind: 'open', seconds: 'open_seconds', secondsEntity: 'open_seconds', min: 10, max: 3600, step: 10 },
       ].map((row) => {
         const cells = config.locks.map((lock) => {
+          if (row.numberOnly) {
+            const entity = lock.entities[row.secondsEntity]
+            const usable = !!lock.sensor && !!entity
+            return `<td><div class="cell${usable ? '' : ' off'}"${usable ? '' : ` title="${escapeHtml(t.needs_sensor)}"`}>
+              <input type="number" data-lnumber="${escapeHtml(entity || '')}" min="${row.min}" max="${row.max}" step="${row.step}" value="${escapeHtml(lock.settings[row.seconds])}"${usable ? '' : ' disabled'} aria-label="${escapeHtml(`${t[`${row.kind}_title`]} · ${lock.name}`)}">
+              <span class="muted">${escapeHtml(t[row.unit])}</span></div></td>`
+          }
           const switchEntity = lock.entities[row.kind]
           const numberEntity = lock.entities[row.secondsEntity]
           const usable = !!lock.sensor && !!switchEntity && !!numberEntity
@@ -990,6 +1007,10 @@
       } else if (kind === 'left_open') {
         avatar = `<span class="avatar warn">${this._icon('mdi:door-open')}</span>`
         if (event.notified) extra = t.told
+      } else if (kind === 'jammed') {
+        avatar = `<span class="avatar bad">${this._icon('mdi:lock-alert')}</span>`
+        if (event.notified) extra = t.told
+        bad = true
       } else if (kind === 'expired') {
         avatar = `<span class="avatar warn">${this._icon('mdi:timer-off-outline')}</span>`
       } else if (kind === 'test') {
@@ -1005,16 +1026,16 @@
         text = t.ev_test
         extra = t.test_quiet
       }
-      const subject = kind === 'test' ? 'Annika' : kind === 'left_open' ? (lock ? lock.name : '') : who
+      const subject = kind === 'test' ? 'Annika' : kind === 'left_open' || kind === 'jammed' ? (lock ? lock.name : '') : who
       return {
         avatar,
         who: subject,
         text,
-        lock: lock && kind !== 'left_open' ? lock.name : '',
+        lock: lock && kind !== 'left_open' && kind !== 'jammed' ? lock.name : '',
         extra,
         bad,
         open: OPEN_KINDS.includes(kind),
-        icon: kind === 'expired' || kind === 'test' || kind === 'left_open' ? '' : OPEN_KINDS.includes(kind) ? 'mdi:lock-open-variant' : 'mdi:lock',
+        icon: kind === 'expired' || kind === 'test' || kind === 'left_open' || kind === 'jammed' ? '' : OPEN_KINDS.includes(kind) ? 'mdi:lock-open-variant' : 'mdi:lock',
       }
     }
 

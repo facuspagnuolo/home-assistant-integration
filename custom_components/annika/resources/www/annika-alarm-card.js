@@ -134,9 +134,9 @@
       pending: '¿Intruso? Desarmá ahora',
       triggered: 'Disparada',
       disarm: 'Desarmar',
-      arm_away: 'Armar en modo salida',
-      arm_night: 'Armar noche',
-      arm_vacation: 'Armar vacaciones',
+      arm_away: 'Salida',
+      arm_night: 'Noche',
+      arm_vacation: 'Vacaciones',
       enter_arm: 'Ingresá el código para armar',
       enter_disarm: 'Ingresá el código para desarmar',
       choose: 'Elegí un modo',
@@ -496,8 +496,8 @@
               <span class="name">${escapeHtml(heading)}</span>
               <span class="chip ${state.startsWith('armed') ? 'armed' : state}">${escapeHtml(t[state] || state)} ${countdown}</span>
             </div>
-            <div class="modes">${modes}${disarmButton}</div>
             <div class="prompt">${escapeHtml(prompt)}</div>
+            <div class="modes">${modes}${disarmButton}</div>
             <div class="dots">${dots}</div>
             <div class="pad">${pad}</div>
             ${message}

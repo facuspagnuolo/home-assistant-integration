@@ -35,11 +35,17 @@ opens (actor.py). A fingerprint, or anything the lock does not say, is an openin
 of nobody in particular: the lock changed, that is all Annika knows.
 
 Rule: disarm the alarm when a door is unlocked, however it was opened, while the
-alarm is armed (or counting down) in one of the chosen modes.
+alarm is armed (or counting down) in one of the chosen modes. The lock changing state
+is not the only way Annika knows: a keypad code, the thumb turn or the remote that the
+lock reports over Z-Wave opens the door too, even when Home Assistant still had it as
+unlocked (after a jam, say), so those disarm as well.
 
 Lock when closed: a lock can lock itself some seconds after its door closes, or
-after it was unlocked with its door already shut (needs a `sensor`). The two settings of that and the one of "hold to unlock" are
-entities of each lock, so the card shows them as it shows any other setting.
+after it was unlocked with its door already shut (needs a `sensor`). When the lock
+does not end up locked (the bolt jams), Annika tries again as many times as the lock's
+"retries" setting says, and then says so in the activity and notifies. The settings of
+that and the one of "hold to unlock" are entities of each lock, so the card shows them
+as it shows any other setting.
 """
 
 from __future__ import annotations
@@ -87,6 +93,11 @@ MAX_TEMP_HOURS = 24 * 30
 DEFAULT_CLOSE_SECONDS = 30
 CLOSE_MIN_SECONDS = 5
 CLOSE_MAX_SECONDS = 600
+# What to do when the lock does not end up locked: how many more times to try, and how long
+# to give the lock to finish before looking at it.
+DEFAULT_CLOSE_RETRIES = 2
+CLOSE_RETRIES_MAX = 5
+CLOSE_VERIFY_SECONDS = 15
 
 DEFAULT_OPEN_SECONDS = 60
 OPEN_MIN_SECONDS = 10
@@ -97,6 +108,8 @@ OPEN_MAX_SECONDS = 3600
 ORIGIN_WINDOW = 15
 # Lock states in which the door is not secured yet: the ones lock-after-closing may still lock.
 NEEDS_LOCKING = ("unlocked", "unlocking", "open", "opening")
+# A jammed lock is not secured either, and a retry must not be cancelled by it.
+UNSECURED = NEEDS_LOCKING + ("jammed",)
 # A lock that changed with no word from Z-Wave is given this long to say it.
 ZWAVE_WAIT = 3
 # What counts as the same opening between the Z-Wave word and the state change.
@@ -178,6 +191,8 @@ TEXTS = {
         "imported_name": "Code in slot {slot}",
         "left_open_title": "🚪 Door open",
         "left_open_message": "{lock} has been open for {time}",
+        "jammed_title": "🔒 Door not locked",
+        "jammed_message": "{lock} could not lock: the bolt is stuck",
     },
     "es": {
         "emergency_title": "🚨 ¡Emergencia!",
@@ -185,6 +200,8 @@ TEXTS = {
         "imported_name": "Código de la posición {slot}",
         "left_open_title": "🚪 Puerta abierta",
         "left_open_message": "{lock} lleva {time} abierta",
+        "jammed_title": "🔒 Puerta sin trabar",
+        "jammed_message": "{lock} no pudo trabarse: el pestillo está atascado",
     },
 }
 
@@ -240,6 +257,7 @@ class _Lock:
         self.hold = True
         self.close_enabled = False
         self.close_seconds = DEFAULT_CLOSE_SECONDS
+        self.close_retries = DEFAULT_CLOSE_RETRIES
         self.open_enabled = False
         self.open_seconds = DEFAULT_OPEN_SECONDS
 
@@ -271,6 +289,8 @@ class AnnikaLocks:
         self._cancels: list[CALLBACK_TYPE] = []
         self._cancel_expiry: CALLBACK_TYPE | None = None
         self._close_timers: dict[str, CALLBACK_TYPE] = {}
+        # How many times each lock was told to lock since it was last unlocked or its door opened.
+        self._close_attempts: dict[str, int] = {}
         self._open_timers: dict[str, CALLBACK_TYPE] = {}
         self._heard: dict[str, datetime] = {}
         self._origins: dict[str, tuple[str, datetime]] = {}
@@ -723,6 +743,13 @@ class AnnikaLocks:
         event = self._log(kind, lock, how=how, who=who, slot=slot, disarmed=disarmed)
         if kind == "emergency":
             event["notified"] = self._emergency(lock, who or "")
+        if kind in KINDS_OPEN:
+            # An opening is an opening even when the lock's state did not change (it was still
+            # "unlocked" after a jam): the alarm is disarmed and the lock is locked again later.
+            self._close_attempts.pop(lock.id, None)
+            if not disarmed:
+                self._disarm_alarm(lock)
+            self._arm_close_if_door_shut(lock)
 
     def _emergency(self, lock: _Lock, who: str) -> bool:
         if not self.notify_view:
@@ -765,10 +792,12 @@ class AnnikaLocks:
 
     def _lock_changed(self, lock: _Lock, state: str) -> None:
         _LOGGER.info("Annika locks: %s changed to %s", lock.entity, state)
-        if state not in NEEDS_LOCKING:
+        if state not in UNSECURED:
             # Locked by hand, by the app, by its own auto-lock...: nothing left to do. The in-between
             # states a Z-Wave lock reports (unlocking, open...) must not drop the countdown.
             self._cancel_close(lock)
+        if state == "locked":
+            self._close_attempts.pop(lock.id, None)
         if state == "unlocked":
             self._disarm_alarm(lock)
             self._arm_close_if_door_shut(lock)
@@ -850,6 +879,7 @@ class AnnikaLocks:
         _LOGGER.info("Annika locks: door of %s went %s -> %s", lock.entity, old, new)
         if new == "on":
             self._cancel_close(lock)
+            self._close_attempts.pop(lock.id, None)
             self._arm_open(lock)
         elif new == "off":
             self._cancel_open(lock)
@@ -875,7 +905,7 @@ class AnnikaLocks:
 
         self._cancel_close(lock)
         state = self.hass.states.get(lock.entity)
-        if not lock.close_enabled or state is None or state.state not in NEEDS_LOCKING:
+        if not lock.close_enabled or state is None or state.state not in UNSECURED:
             _LOGGER.info(
                 "Annika locks: not arming lock-after-closing for %s (enabled=%s, lock state=%s; needs enabled and 'unlocked')",
                 lock.entity,
@@ -895,7 +925,7 @@ class AnnikaLocks:
         self._close_timers.pop(lock.id, None)
         door = self.hass.states.get(lock.sensor) if lock.sensor else None
         state = self.hass.states.get(lock.entity)
-        if not lock.close_enabled or door is None or door.state != "off" or state is None or state.state not in NEEDS_LOCKING:
+        if not lock.close_enabled or door is None or door.state != "off" or state is None or state.state not in UNSECURED:
             _LOGGER.info(
                 "Annika locks: not locking %s after the countdown (enabled=%s, door=%s, lock=%s)",
                 lock.entity,
@@ -904,13 +934,47 @@ class AnnikaLocks:
                 state.state if state is not None else None,
             )
             return
-        _LOGGER.info("Annika locks: locking %s now", lock.entity)
+        attempts = self._close_attempts.get(lock.id, 0)
+        if attempts > lock.close_retries:
+            # Already tried, and said so: it waits for the lock to be locked or the door to open.
+            return
+        self._close_attempts[lock.id] = attempts + 1
+        _LOGGER.info("Annika locks: locking %s now (try %s of %s)", lock.entity, attempts + 1, lock.close_retries + 1)
         self._origins[lock.id] = ("close", dt_util.utcnow())
         try:
             await self.hass.services.async_call("lock", "lock", {"entity_id": lock.entity}, blocking=True)
         except HomeAssistantError as error:
             self._origins.pop(lock.id, None)
             _LOGGER.warning("Annika locks: could not lock %s after the door closed: %s", lock.entity, error)
+
+        @callback
+        def verify(_now) -> None:
+            self.hass.async_create_task(self._async_verify_close(lock))
+
+        # Whether the lock ends up locked is read from its state: a jam does not always say so.
+        self._close_timers[lock.id] = async_call_later(self.hass, CLOSE_VERIFY_SECONDS, verify)
+
+    async def _async_verify_close(self, lock: _Lock) -> None:
+        self._close_timers.pop(lock.id, None)
+        state = self.hass.states.get(lock.entity)
+        if not lock.close_enabled or state is None or state.state not in UNSECURED:
+            return
+        if self._close_attempts.get(lock.id, 0) <= lock.close_retries:
+            _LOGGER.info("Annika locks: %s is still %s, trying again", lock.entity, state.state)
+            await self._async_close(lock)
+            return
+        _LOGGER.warning("Annika locks: %s did not lock after %s tries", lock.entity, self._close_attempts.get(lock.id))
+        notified = bool(self.notify_view)
+        self._log("jammed", lock, how="close", notified=notified)
+        if notified:
+            await self._async_send(
+                {
+                    "type": "security",
+                    "title": self._text("jammed_title"),
+                    "message": self._text("jammed_message", lock=lock.name),
+                    "view": self.notify_view,
+                }
+            )
 
     # --- notify when the door stays open ------------------------------------
 
@@ -961,6 +1025,7 @@ class AnnikaLocks:
         hold: bool | None = None,
         close_enabled: bool | None = None,
         close_seconds: int | None = None,
+        close_retries: int | None = None,
         open_enabled: bool | None = None,
         open_seconds: int | None = None,
     ) -> None:
@@ -972,8 +1037,12 @@ class AnnikaLocks:
             lock.close_enabled = bool(close_enabled)
             if not lock.close_enabled:
                 self._cancel_close(lock)
+                self._close_attempts.pop(lock.id, None)
         if close_seconds is not None:
             lock.close_seconds = max(CLOSE_MIN_SECONDS, min(CLOSE_MAX_SECONDS, int(close_seconds)))
+        if close_retries is not None:
+            lock.close_retries = max(0, min(CLOSE_RETRIES_MAX, int(close_retries)))
+            self._close_attempts.pop(lock.id, None)
         if open_seconds is not None:
             lock.open_seconds = max(OPEN_MIN_SECONDS, min(OPEN_MAX_SECONDS, int(open_seconds)))
         if open_enabled is not None:
@@ -993,6 +1062,7 @@ class AnnikaLocks:
             "hold": registry.async_get_entity_id("switch", DOMAIN, f"{DOMAIN}_lock_{lock.id}_hold"),
             "close": registry.async_get_entity_id("switch", DOMAIN, f"{DOMAIN}_lock_{lock.id}_close"),
             "seconds": registry.async_get_entity_id("number", DOMAIN, f"{DOMAIN}_lock_{lock.id}_close_seconds"),
+            "retries": registry.async_get_entity_id("number", DOMAIN, f"{DOMAIN}_lock_{lock.id}_close_retries"),
             "open": registry.async_get_entity_id("switch", DOMAIN, f"{DOMAIN}_lock_{lock.id}_open"),
             "open_seconds": registry.async_get_entity_id("number", DOMAIN, f"{DOMAIN}_lock_{lock.id}_open_seconds"),
         }
@@ -1017,6 +1087,7 @@ class AnnikaLocks:
                             "hold": lock.hold,
                             "close": lock.close_enabled,
                             "seconds": lock.close_seconds,
+                            "retries": lock.close_retries,
                             "open": lock.open_enabled,
                             "open_seconds": lock.open_seconds,
                         },
